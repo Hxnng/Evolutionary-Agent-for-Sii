@@ -1,8 +1,8 @@
 """
-Batch evaluator for SimpleVQA and 2Wiki style JSON/JSONL files.
+Batch evaluator for SimpleVQA-style JSON/JSONL files.
 
 It produces the required prediction JSONL shape:
-{"index":, "instruction":, "image":, "answer":, "pred":}
+{"index":, "task_id":, "instruction":, "image":, "answer":, "pred":, ...}
 
 Trajectories are written by task_runner into the selected trajectory directory.
 """
@@ -48,6 +48,9 @@ def _build_instruction(row: dict[str, Any]) -> str:
     instruction = _field(row, ("instruction", "question", "query", "input", "prompt"))
     if not instruction:
         raise ValueError(f"Record has no instruction/question field: {row.keys()}")
+    image_description = _field(row, ("image_description", "caption", "description"), "")
+    if image_description:
+        instruction = f"{instruction}\n\n图像描述参考：{image_description}"
     return instruction
 
 
@@ -69,6 +72,7 @@ def run_dataset(
     *,
     image_root: Path | None = None,
     limit: int | None = None,
+    offset: int = 0,
     split_name: str = "eval",
     evolved: bool = True,
     model_name: str | None = None,
@@ -76,6 +80,8 @@ def run_dataset(
     metrics_output: Path | None = None,
 ) -> dict[str, Any]:
     rows = _read_records(dataset_path)
+    if offset:
+        rows = rows[offset:]
     if limit is not None:
         rows = rows[:limit]
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -87,7 +93,8 @@ def run_dataset(
 
     with output_path.open("w", encoding="utf-8") as out:
         for local_i, row in enumerate(rows):
-            index = row.get("index", row.get("id", local_i))
+            source_index = offset + local_i
+            index = row.get("index", row.get("data_id", row.get("id", source_index)))
             instruction = _build_instruction(row)
             answer = _field(row, ("answer", "gold", "label", "target"))
             image = _field(row, ("image", "image_path", "image_url", "img"), "")
@@ -113,8 +120,11 @@ def run_dataset(
             record = {
                 "index": index,
                 "task_id": result.get("task_id", f"{split_name}_{index}"),
+                "dataset": split_name,
                 "instruction": instruction,
                 "image": image,
+                "source": row.get("source", ""),
+                "language": row.get("language", ""),
                 "answer": answer,
                 "pred": pred,
                 "success": bool(result.get("success", False)),
@@ -156,6 +166,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--traj-dir", required=True, type=Path)
     p.add_argument("--image-root", type=Path, default=None)
     p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--offset", type=int, default=0)
     p.add_argument("--split-name", default="eval")
     p.add_argument("--baseline", action="store_true", help="Disable memory/reflection prompt injection.")
     p.add_argument("--model", default=None)
@@ -172,6 +183,7 @@ if __name__ == "__main__":
         args.traj_dir,
         image_root=args.image_root,
         limit=args.limit,
+        offset=args.offset,
         split_name=args.split_name,
         evolved=not args.baseline,
         model_name=args.model,

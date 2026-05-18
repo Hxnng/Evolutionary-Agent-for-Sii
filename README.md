@@ -147,7 +147,12 @@ python -B task_runner.py \
 
 ## 7. 批量评测
 
-批量入口：`harness-sii/evaluate.py`。
+批量入口：
+
+- `harness-sii/evaluate.py`：SimpleVQA JSON/JSONL。
+- `harness-sii/evaluate_2wiki.py`：2WikiMultihopQA parquet/JSON/JSONL。
+- `harness-sii/evaluate_benchmark.py`：闭源 benchmark CSV，列名 `problem,image,answer`。
+- `harness-sii/metris.py`：预测文件与轨迹目录的指标汇总、baseline/evolved 对比。
 
 支持字段名：
 
@@ -160,7 +165,8 @@ python -B task_runner.py \
 ```bash
 cd ./Evolutionary-Agent-for-Sii/harness-sii
 python -B evaluate.py \
-  --dataset ../datasets/simplevqa_100.jsonl \
+  --dataset data/simpleVQA/simpleVQA_final_modified.json \
+  --image-root data/simpleVQA/simpleVQA_datasets \
   --output runs/baseline/simplevqa_predictions.jsonl \
   --metrics-output runs/baseline/simplevqa_metrics.json \
   --traj-dir runs/baseline/simplevqa_trajectories \
@@ -172,14 +178,36 @@ python -B evaluate.py \
 
 ```bash
 python -B evaluate.py \
-  --dataset ../datasets/simplevqa_100.jsonl \
+  --dataset data/simpleVQA/simpleVQA_final_modified.json \
+  --image-root data/simpleVQA/simpleVQA_datasets \
   --output runs/evolved/simplevqa_predictions.jsonl \
   --metrics-output runs/evolved/simplevqa_metrics.json \
   --traj-dir runs/evolved/simplevqa_trajectories \
   --split-name simplevqa
 ```
 
-2Wiki 同理替换 `--dataset`、`--output`、`--traj-dir`。
+2Wiki：
+
+```bash
+python -B evaluate_2wiki.py \
+  --dataset data/2wiki \
+  --split validation \
+  --output runs/evolved/2wiki_predictions.jsonl \
+  --metrics-output runs/evolved/2wiki_metrics.json \
+  --traj-dir runs/evolved/2wiki_trajectories \
+  --split-name 2wiki
+```
+
+benchmark.csv：
+
+```bash
+python -B evaluate_benchmark.py \
+  --dataset data/benchmark.csv \
+  --output runs/evolved/benchmark_predictions.jsonl \
+  --metrics-output runs/evolved/benchmark_metrics.json \
+  --traj-dir runs/evolved/benchmark_trajectories \
+  --split-name benchmark
+```
 
 输出预测 JSONL 格式：
 

@@ -59,13 +59,52 @@ python -B task_runner.py \
 
 ## Benchmark 输出
 
+### SimpleVQA
+
 ```bash
 python -B evaluate.py \
-  --dataset ../datasets/simplevqa_100.jsonl \
+  --dataset data/simpleVQA/simpleVQA_final_modified.json \
+  --image-root data/simpleVQA/simpleVQA_datasets \
   --output runs/evolved/simplevqa_predictions.jsonl \
   --metrics-output runs/evolved/simplevqa_metrics.json \
   --traj-dir runs/evolved/simplevqa_trajectories \
-  --split-name simplevqa
+  --split-name simplevqa \
+  --limit 20
+```
+
+### 2WikiMultihopQA
+
+```bash
+python -B evaluate_2wiki.py \
+  --dataset data/2wiki \
+  --split validation \
+  --output runs/evolved/2wiki_predictions.jsonl \
+  --metrics-output runs/evolved/2wiki_metrics.json \
+  --traj-dir runs/evolved/2wiki_trajectories \
+  --split-name 2wiki \
+  --limit 20
+```
+
+### benchmark.csv
+
+如果后续 benchmark 数据是 CSV，且列名为 `problem,image,answer`：
+
+```bash
+python -B evaluate_benchmark.py \
+  --dataset data/benchmark.csv \
+  --output runs/evolved/benchmark_predictions.jsonl \
+  --metrics-output runs/evolved/benchmark_metrics.json \
+  --traj-dir runs/evolved/benchmark_trajectories \
+  --split-name benchmark
+```
+
+### 汇总指标
+
+```bash
+python -B metris.py \
+  --pred runs/evolved/simplevqa_predictions.jsonl \
+  --traj-dir runs/evolved/simplevqa_trajectories \
+  --output runs/evolved/simplevqa_report.json
 ```
 
 预测 JSONL 每行包含：
