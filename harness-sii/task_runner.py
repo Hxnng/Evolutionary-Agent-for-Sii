@@ -435,8 +435,13 @@ def run_task(
 
     logger.info("run_task: task_id=%s", task_id)
 
-    reset_trajectory = bool(task.get("reset_trajectory", True))
-    traj   = Trajectory(task_id, output_dir=trajectory_dir, reset=reset_trajectory)
+    overwrite_trajectory = bool(task.get("overwrite_trajectory", False))
+    traj   = Trajectory(
+        task_id,
+        output_dir=trajectory_dir,
+        reset=overwrite_trajectory,
+        preserve_existing=not overwrite_trajectory,
+    )
     client = OpenAI(
         base_url=llm_base_url or LLM_BASE_URL,
         api_key=LLM_API_KEY if (llm_base_url or LLM_BASE_URL).startswith("https://dashscope") else (LLM_API_KEY or "EMPTY"),
@@ -590,6 +595,7 @@ def run_task(
     elapsed = time.time() - started_at
     summary.update(
         {
+            "instruction": instruction,
             "pred": pred_answer,
             "answer": gold_answer,
             "success": success,
@@ -667,6 +673,7 @@ def run_task(
 
     return {
         "task_id":         task_id,
+        "instruction":     instruction,
         "answer":          final_answer,
         "pred":            pred_answer,
         "success":         success,
@@ -694,6 +701,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--image-url",         default=None, help="Online path to input image (optional)")
     p.add_argument("--answer",            default="", help="Gold answer for evaluation/reflection (optional)")
     p.add_argument("--baseline",          action="store_true", help="Disable memory injection for baseline runs")
+    p.add_argument("--overwrite-traj",    action="store_true", help="Overwrite <task-id>.jsonl instead of preserving old runs")
     return p.parse_args()
 
 
@@ -716,6 +724,7 @@ if __name__ == "__main__":
         "image_url":   image_url,
         "answer":      args.answer,
         "evolved":     not args.baseline,
+        "overwrite_trajectory": args.overwrite_traj,
     }
     if args.task_id:
         task["id"] = args.task_id

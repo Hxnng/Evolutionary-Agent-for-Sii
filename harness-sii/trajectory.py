@@ -7,6 +7,7 @@ tagged with role, timestamp, step_id, and optional tool metadata.
 
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -28,13 +29,27 @@ class Trajectory:
     }
     """
 
-    def __init__(self, task_id: str, output_dir: str = "trajectories", reset: bool = False):
+    def __init__(
+        self,
+        task_id: str,
+        output_dir: str = "trajectories",
+        reset: bool = False,
+        preserve_existing: bool = True,
+    ):
         self.task_id = task_id
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         self.path = output_path / f"{task_id}.jsonl"
         if reset and self.path.exists():
             self.path.unlink()
+        elif preserve_existing and self.path.exists():
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            candidate = output_path / f"{task_id}_{stamp}.jsonl"
+            suffix = 1
+            while candidate.exists():
+                candidate = output_path / f"{task_id}_{stamp}_{suffix:02d}.jsonl"
+                suffix += 1
+            self.path = candidate
 
     # ------------------------------------------------------------------
     # Write

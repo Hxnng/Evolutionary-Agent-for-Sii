@@ -129,7 +129,7 @@ python -B task_runner.py \
 - 搜索模式为 `search_text(direct)`。
 - 如果 browser-service 已启动，浏览器工具应正常连接 `127.0.0.1:8080`。
 - 最终输出包含 `<answer>...</answer>`。
-- 轨迹写入 `harness-sii/trajectories/smoke_001.jsonl`。
+- 轨迹写入 `harness-sii/trajectories/smoke_001.jsonl`；如果该文件已存在，会自动写入带时间戳的新文件以保留旧轨迹。需要强制覆盖时加 `--overwrite-traj`。
 
 ## 6. 图片任务示例
 
@@ -162,6 +162,7 @@ cd ./Evolutionary-Agent-for-Sii/harness-sii
 python -B evaluate.py \
   --dataset ../datasets/simplevqa_100.jsonl \
   --output runs/baseline/simplevqa_predictions.jsonl \
+  --metrics-output runs/baseline/simplevqa_metrics.json \
   --traj-dir runs/baseline/simplevqa_trajectories \
   --split-name simplevqa \
   --baseline
@@ -173,6 +174,7 @@ python -B evaluate.py \
 python -B evaluate.py \
   --dataset ../datasets/simplevqa_100.jsonl \
   --output runs/evolved/simplevqa_predictions.jsonl \
+  --metrics-output runs/evolved/simplevqa_metrics.json \
   --traj-dir runs/evolved/simplevqa_trajectories \
   --split-name simplevqa
 ```
@@ -182,10 +184,10 @@ python -B evaluate.py \
 输出预测 JSONL 格式：
 
 ```json
-{"index": 0, "instruction": "...", "image": "", "answer": "...", "pred": "..."}
+{"index": 0, "task_id": "simplevqa_0", "instruction": "...", "image": "", "answer": "...", "pred": "...", "success": true, "steps": 4, "trajectory_path": "..."}
 ```
 
-每个任务的完整轨迹单独保存为 JSONL，包含 system/user/assistant/tool/reflection 等记录。
+每个任务的完整轨迹单独保存为 JSONL，包含 system/user/assistant/tool/reflection 等记录。`--metrics-output` 会额外写出总样本数、正确数、准确率、耗时和运行模式，方便 baseline/evolved 对比。
 
 ## 8. 反思与记忆
 

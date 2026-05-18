@@ -52,9 +52,27 @@ python -B task_runner.py \
   --max-steps 8
 ```
 
-轨迹文件按 `--task-id` 命名。上面的命令会覆盖生成
-`trajectories/smoke_001.jsonl`；旧的 `trajectories/my_task_001.jsonl`
-只是之前任务留下的历史文件，不会被这条命令更新。
+轨迹文件按 `--task-id` 命名，并默认保留历史运行。若
+`trajectories/smoke_001.jsonl` 已存在，新运行会自动写入类似
+`trajectories/smoke_001_20260519_001234.jsonl` 的文件。只有显式加
+`--overwrite-traj` 时才会覆盖 `<task-id>.jsonl`。
+
+## Benchmark 输出
+
+```bash
+python -B evaluate.py \
+  --dataset ../datasets/simplevqa_100.jsonl \
+  --output runs/evolved/simplevqa_predictions.jsonl \
+  --metrics-output runs/evolved/simplevqa_metrics.json \
+  --traj-dir runs/evolved/simplevqa_trajectories \
+  --split-name simplevqa
+```
+
+预测 JSONL 每行包含：
+
+```json
+{"index": 0, "task_id": "simplevqa_0", "instruction": "...", "image": "", "answer": "...", "pred": "...", "success": true, "steps": 4, "trajectory_path": "..."}
+```
 
 ## 主要文件
 

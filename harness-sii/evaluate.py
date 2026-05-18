@@ -73,6 +73,7 @@ def run_dataset(
     evolved: bool = True,
     model_name: str | None = None,
     llm_base_url: str | None = None,
+    metrics_output: Path | None = None,
 ) -> dict[str, Any]:
     rows = _read_records(dataset_path)
     if limit is not None:
@@ -111,10 +112,14 @@ def run_dataset(
             pred = extract_answer(result.get("answer", ""))
             record = {
                 "index": index,
+                "task_id": result.get("task_id", f"{split_name}_{index}"),
                 "instruction": instruction,
                 "image": image,
                 "answer": answer,
                 "pred": pred,
+                "success": bool(result.get("success", False)),
+                "steps": result.get("steps", 0),
+                "trajectory_path": result.get("trajectory_path", ""),
             }
             out.write(json.dumps(record, ensure_ascii=False) + "\n")
             out.flush()
@@ -124,15 +129,24 @@ def run_dataset(
                 correct += 1
 
     elapsed = time.time() - started
-    return {
+    metrics = {
         "dataset": str(dataset_path),
         "output": str(output_path),
         "trajectory_dir": str(trajectory_dir),
+        "split_name": split_name,
+        "mode": "evolved" if evolved else "baseline",
         "total": total,
         "correct": correct,
         "accuracy": correct / total if total else 0.0,
         "elapsed_sec": elapsed,
     }
+    if metrics_output is not None:
+        metrics_output.parent.mkdir(parents=True, exist_ok=True)
+        metrics_output.write_text(
+            json.dumps(metrics, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    return metrics
 
 
 def _parse_args() -> argparse.Namespace:
@@ -146,6 +160,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--baseline", action="store_true", help="Disable memory/reflection prompt injection.")
     p.add_argument("--model", default=None)
     p.add_argument("--llm-url", default=None)
+    p.add_argument("--metrics-output", type=Path, default=None)
     return p.parse_args()
 
 
@@ -161,5 +176,6 @@ if __name__ == "__main__":
         evolved=not args.baseline,
         model_name=args.model,
         llm_base_url=args.llm_url,
+        metrics_output=args.metrics_output,
     )
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
