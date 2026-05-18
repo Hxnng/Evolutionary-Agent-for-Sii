@@ -1,0 +1,114 @@
+# Qwen3-8B + SimpleVQA evaluation config for my-agent.
+# The model path points to the local Hugging Face format checkpoint.
+# The dataset path matches /root/autodl-tmp/datasets/download_simplevqa.sh.
+
+run:
+  name: qwen3_8b_simplevqa
+  task: text_only_vqa_baseline
+  output_dir: /root/autodl-tmp/auto_agent/my-agent/runs/qwen3_8b_simplevqa
+  seed: 42
+  max_samples: null
+  resume: true
+  request_concurrency: 24
+
+model:
+  name: Qwen3-8B
+  modality: text
+  vision_input: unsupported
+  provider: openai_compatible
+  model_path: /root/autodl-tmp/models/Qwen3-8B
+  base_url: http://127.0.0.1:8000/v1
+  base_urls:
+    - http://127.0.0.1:8000/v1
+    - http://127.0.0.1:8001/v1
+  api_key: EMPTY
+  served_model_name: qwen3-8b
+  trust_remote_code: true
+  dtype: bfloat16
+  max_model_len: 8192
+
+  vllm_server:
+    enabled: true
+    recommended_mode: two_single_gpu_replicas
+    gpu_memory_utilization: 0.88
+    max_num_seqs: 64
+    replica_commands:
+      - CUDA_VISIBLE_DEVICES=0 /root/autodl-tmp/conda_envs/my_agent/bin/python -m vllm.entrypoints.openai.api_server --model /root/autodl-tmp/models/Qwen3-8B --served-model-name qwen3-8b --trust-remote-code --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.88 --max-num-seqs 64 --host 127.0.0.1 --port 8000
+      - CUDA_VISIBLE_DEVICES=1 /root/autodl-tmp/conda_envs/my_agent/bin/python -m vllm.entrypoints.openai.api_server --model /root/autodl-tmp/models/Qwen3-8B --served-model-name qwen3-8b --trust-remote-code --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.88 --max-num-seqs 64 --host 127.0.0.1 --port 8001
+
+generation:
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 256
+  stop: []
+
+dataset:
+  name: SimpleVQA
+  repo_id: m-a-p/SimpleVQA
+  root: /root/autodl-tmp/datasets/SimpleVQA
+  split: test
+  file_patterns:
+    - "*.jsonl"
+    - "*.json"
+    - "*.parquet"
+    - "*.csv"
+  image_root_candidates:
+    - /root/autodl-tmp/datasets/SimpleVQA
+    - /root/autodl-tmp/datasets/SimpleVQA/images
+    - /root/autodl-tmp/datasets/SimpleVQA/data
+
+  field_candidates:
+    question:
+      - question
+      - query
+      - prompt
+      - text
+    image:
+      - image
+      - image_path
+      - img
+      - img_path
+      - file_name
+      - filename
+    answer:
+      - answer
+      - label
+      - gt_answer
+      - ground_truth
+      - target
+    id:
+      - id
+      - question_id
+      - sample_id
+
+input:
+  mode: question_only
+  include_image: false
+  note: Qwen3-8B is a text-only CausalLM checkpoint. This config evaluates a question-only baseline on SimpleVQA.
+
+prompt:
+  system: |
+    You are answering a visual question answering benchmark without access to the image.
+    Use only the text of the question and common knowledge when possible.
+    If the answer cannot be determined from the question alone, output "unknown".
+  user_template: |
+    Question: {question}
+
+evaluation:
+  prediction_file: predictions.jsonl
+  metrics_file: metrics.json
+  normalize_answer: true
+  metrics:
+    - exact_match
+    - relaxed_exact_match
+
+agent:
+  max_tool_iterations: 1
+  max_consecutive_tool_errors: 1
+  tools:
+    search:
+      enabled: false
+    browsergym:
+      enabled: false
+    code_execution:
+      enabled: false

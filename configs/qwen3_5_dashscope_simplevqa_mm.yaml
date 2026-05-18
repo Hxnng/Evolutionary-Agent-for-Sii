@@ -1,0 +1,92 @@
+# DashScope OpenAI-compatible API config for SimpleVQA multimodal evaluation.
+# This config does not require a local Qwen3.5 checkpoint or vLLM server.
+# It sends local SimpleVQA images as base64 data URLs.
+
+run:
+  name: qwen3_5_dashscope_simplevqa_mm
+  task: multimodal_visual_question_answering_api
+  output_dir: /root/autodl-tmp/auto_agent/my-agent/runs/qwen3_5_dashscope_simplevqa_mm
+  seed: 42
+  max_samples: null
+  resume: true
+  request_concurrency: 4
+
+model:
+  name: qwen3.5-35b-a3b
+  modality: image_text_to_text
+  vision_input: supported
+  provider: dashscope_openai_compatible
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  base_urls:
+    - https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_key: sk-3fd51b9af38a4b8ca03b2845ad633864
+  api_key_env: null
+  served_model_name: qwen3.5-35b-a3b
+
+generation:
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 128
+  stop: []
+  extra_body:
+    enable_thinking: false
+
+dataset:
+  name: SimpleVQA
+  repo_id: m-a-p/SimpleVQA
+  root: /root/autodl-tmp/datasets/SimpleVQA
+  annotation_file: /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_final_modified.json
+  image_root: /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_datasets
+  image_archive: /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_datasets.zip
+  split: test
+
+  field_candidates:
+    question:
+      - question
+    image:
+      - image
+    answer:
+      - answer
+    id:
+      - data_id
+
+input:
+  mode: image_and_question
+  include_image: true
+  image_transport: local_file_base64
+  image_mime_type: image/jpeg
+  image_path_template: "{image_root}/{image}"
+  missing_image_policy: error
+  note: JSON image paths such as CCSimpleQA/4.jpg are resolved under dataset.image_root.
+
+prompt:
+  system: |
+    You are a visual question answering evaluator.
+    Answer using the image and the question.
+    Output only the shortest correct answer.
+    Do not include reasoning, explanation, markdown, or extra words.
+    If the answer cannot be determined from the image, output "unknown".
+  user_template: |
+    {question}
+
+evaluation:
+  prediction_file: predictions.jsonl
+  metrics_file: metrics.json
+  normalize_answer: true
+  metrics:
+    - exact_match
+    - relaxed_exact_match
+
+agent:
+  max_tool_iterations: 4
+  max_consecutive_tool_errors: 0
+  enable_thinking: true
+  stream: true
+  max_tokens: 1024
+  tools:
+    search:
+      enabled: true
+    browsergym:
+      enabled: false
+    code_execution:
+      enabled: true

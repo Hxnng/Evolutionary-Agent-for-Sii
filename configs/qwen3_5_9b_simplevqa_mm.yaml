@@ -1,0 +1,105 @@
+# Qwen3.5-9B multimodal SimpleVQA evaluation config.
+# This config is for the image-capable Qwen/Qwen3.5-9B checkpoint.
+# It expects SimpleVQA images to be extracted from:
+#   /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_datasets.zip
+# into:
+#   /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_datasets
+
+run:
+  name: qwen3_5_9b_simplevqa_mm
+  task: multimodal_visual_question_answering
+  output_dir: /root/autodl-tmp/auto_agent/my-agent/runs/qwen3_5_9b_simplevqa_mm
+  seed: 42
+  max_samples: null
+  resume: true
+  request_concurrency: 8
+
+model:
+  name: Qwen3.5-9B
+  modality: image_text_to_text
+  vision_input: supported
+  provider: openai_compatible
+  model_path: /root/autodl-tmp/models/Qwen3.5-9B
+  base_url: http://127.0.0.1:8010/v1
+  base_urls:
+    - http://127.0.0.1:8010/v1
+    - http://127.0.0.1:8011/v1
+  api_key: EMPTY
+  served_model_name: qwen3.5-9b
+  trust_remote_code: true
+  dtype: bfloat16
+  max_model_len: 8192
+
+  vllm_server:
+    enabled: true
+    recommended_mode: two_single_gpu_replicas
+    gpu_memory_utilization: 0.90
+    max_num_seqs: 16
+    limit_mm_per_prompt:
+      image: 1
+    replica_commands:
+      - CUDA_VISIBLE_DEVICES=0 /root/autodl-tmp/conda_envs/my_agent/bin/python -m vllm.entrypoints.openai.api_server --model /root/autodl-tmp/models/Qwen3.5-9B --served-model-name qwen3.5-9b --trust-remote-code --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.90 --max-num-seqs 16 --limit-mm-per-prompt image=1 --host 127.0.0.1 --port 8010
+      - CUDA_VISIBLE_DEVICES=1 /root/autodl-tmp/conda_envs/my_agent/bin/python -m vllm.entrypoints.openai.api_server --model /root/autodl-tmp/models/Qwen3.5-9B --served-model-name qwen3.5-9b --trust-remote-code --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.90 --max-num-seqs 16 --limit-mm-per-prompt image=1 --host 127.0.0.1 --port 8011
+
+generation:
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 128
+  stop: []
+
+dataset:
+  name: SimpleVQA
+  repo_id: m-a-p/SimpleVQA
+  root: /root/autodl-tmp/datasets/SimpleVQA
+  annotation_file: /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_final_modified.json
+  image_root: /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_datasets
+  image_archive: /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_datasets.zip
+  split: test
+
+  field_candidates:
+    question:
+      - question
+    image:
+      - image
+    answer:
+      - answer
+    id:
+      - data_id
+
+input:
+  mode: image_and_question
+  include_image: true
+  image_transport: local_file_base64
+  image_mime_type: image/jpeg
+  image_path_template: "{image_root}/{image}"
+  missing_image_policy: error
+  note: JSON image paths such as CCSimpleQA/4.jpg are resolved under dataset.image_root.
+
+prompt:
+  system: |
+    You are a visual question answering evaluator.
+    Answer using the image and the question.
+    Output only the shortest correct answer.
+    Do not include reasoning, explanation, markdown, or extra words.
+    If the answer cannot be determined from the image, output "unknown".
+  user_template: |
+    {question}
+
+evaluation:
+  prediction_file: predictions.jsonl
+  metrics_file: metrics.json
+  normalize_answer: true
+  metrics:
+    - exact_match
+    - relaxed_exact_match
+
+agent:
+  max_tool_iterations: 1
+  max_consecutive_tool_errors: 1
+  tools:
+    search:
+      enabled: false
+    browsergym:
+      enabled: false
+    code_execution:
+      enabled: false
