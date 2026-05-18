@@ -38,12 +38,17 @@ else
 fi
 
 # -------- 1) Python 环境 --------
-PY="python3"
-command -v python3 >/dev/null 2>&1 || PY="python"
+# If the user already activated conda (recommended for this project), use it
+# directly.  On macOS, `python3` may point to a Homebrew prerelease such as
+# Python 3.14, which can make Playwright browser installation inconsistent.
+PY="python"
+command -v python >/dev/null 2>&1 || PY="python3"
 
 if [ "$IN_CONTAINER" = "1" ]; then
     # 容器内：直接用系统 Python，避免 venv 在某些精简镜像里失败
     log "Using system Python: $($PY --version)"
+elif [ -n "${CONDA_PREFIX:-}" ]; then
+    log "Using active conda Python: $($PY --version)"
 else
     if [ ! -d ".venv" ]; then
         log "Creating virtualenv .venv ..."
@@ -119,7 +124,11 @@ log "Checking Chromium runtime libs ..."
 if ! $PY - <<'PYEOF' 2>/dev/null
 from playwright.sync_api import sync_playwright
 with sync_playwright() as p:
-    b = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+    b = p.chromium.launch(
+        headless=True,
+        executable_path=p.chromium.executable_path,
+        args=["--no-sandbox", "--disable-dev-shm-usage"],
+    )
     b.close()
 PYEOF
 then
@@ -129,7 +138,11 @@ then
     if ! $PY - <<'PYEOF' 2>/dev/null
 from playwright.sync_api import sync_playwright
 with sync_playwright() as p:
-    b = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+    b = p.chromium.launch(
+        headless=True,
+        executable_path=p.chromium.executable_path,
+        args=["--no-sandbox", "--disable-dev-shm-usage"],
+    )
     b.close()
 PYEOF
     then

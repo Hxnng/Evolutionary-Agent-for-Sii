@@ -70,6 +70,7 @@ class BrowserManager:
             self._pw = await async_playwright().start()
             self._browser = await self._pw.chromium.launch(
                 headless=settings.headless,
+                executable_path=self._pw.chromium.executable_path,
                 args=[
                     f"--remote-debugging-port={settings.browser_cdp_port}",
                     "--remote-debugging-address=0.0.0.0",

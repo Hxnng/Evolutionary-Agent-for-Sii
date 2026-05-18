@@ -23,12 +23,27 @@ import argparse
 import json
 import logging
 import os
+import re
+import time
 import uuid
+from types import SimpleNamespace
 from typing import Optional
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+except Exception:  # noqa: BLE001
+    load_dotenv = None
+
+if load_dotenv is not None:
+    here = Path(__file__).resolve().parent
+    load_dotenv(here.parent / ".env")
+    load_dotenv(here / ".env", override=True)
+
 from openai import OpenAI
 
+from memory import MemoryItem, MemoryStore, format_memories_for_prompt
+from reflection import reflect
 from roles import Role
 from trajectory import Trajectory
 from tools.search_tool import search_text, search_image
@@ -48,12 +63,19 @@ logging.basicConfig(
 logger = logging.getLogger("harness.task_runner")
 
 # ---------------------------------------------------------------------------
-# LLM connection (Sglang OpenAI-compat, two nodes behind Nginx)
+# LLM connection.  The defaults target Alibaba Cloud Bailian / DashScope in
+# OpenAI-compatible mode, matching the exam environment.  They can still be
+# overridden for local vLLM/Sglang with LLM_BASE_URL and MODEL_NAME.
 # ---------------------------------------------------------------------------
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://127.0.0.1:8000/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME",   "qwen-3.5")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME",   "qwen3.5-35b-a3b")
+LLM_API_KEY  = os.getenv("LLM_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY") or "EMPTY"
 MAX_STEPS    = int(os.getenv("MAX_STEPS", "20"))
 MAX_TOKENS   = int(os.getenv("MAX_TOKENS", "16000"))
+MEMORY_PATH  = os.getenv("MEMORY_PATH", "memory/long_term_memory.jsonl")
+ENABLE_MEMORY = os.getenv("ENABLE_MEMORY", "1") == "1"
+ENABLE_REFLECTION = os.getenv("ENABLE_REFLECTION", "1") == "1"
+ENABLE_THINKING = os.getenv("ENABLE_THINKING", "1") == "1"
 
 # 调试开关：True = 不向 LLM 注册 tools，纯文本对话，便于先验证 LLM 通路
 # 工具实现接好后默认关闭；如需调试 LLM 通路，export DISABLE_TOOLS=1
@@ -217,7 +239,12 @@ TOOLS_SCHEMA = [
 # ---------------------------------------------------------------------------
 TOOL_FN_MAP = {
     "search_text":      lambda a: search_text(**a),
-    "search_image":     lambda a: search_image(**a),
+    "search_image":     lambda a: search_image(
+        a.get("image") or a.get("image_url", ""),
+        a.get("top_k", 1),
+        a.get("fetch", True),
+        a.get("max_chars", 500),
+    ),
     "browser_navigate": lambda a: browser_navigate(**a),
     "browser_get_text": lambda a: browser_get_text(**a),
     "browser_click":    lambda a: browser_click(**a),
@@ -236,7 +263,136 @@ SYSTEM_PROMPT = """你是一个高效、严谨的任务执行 Agent，运行在�
 3. 若工具返回 ok=False，分析 error，最多重试 2 次同类操作；仍失败则换工具或方法。
 4. 若调用search_image工具，请使用输入图像的在线链接。
 5. 每一步要不调用工具，要不输出最终答案，不能同时输出空的工具调用或者空的内容。
+6. 最终答案必须使用 <answer>...</answer> 包裹；若题目要求只输出实体名，就不要添加解释。
+7. 如果搜索和浏览器工具都明确不可用，不要编造事实；回答工具不可用并说明需要配置 SERPER_API_KEY/JINA_API_KEY 或启动浏览器服务。
 """
+
+
+def normalize_answer(text: str) -> str:
+    """Small evaluator normalizer for baseline/evolved comparisons."""
+    text = (text or "").strip().lower()
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
+    return text
+
+
+def extract_answer(text: str) -> str:
+    """Extract the required answer body from a model response."""
+    text = text or ""
+    m = re.search(r"<answer>(.*?)</answer>", text, flags=re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return text.strip()
+
+
+def _build_system_prompt(instruction: str, evolved: bool) -> str:
+    if not evolved or not ENABLE_MEMORY:
+        return SYSTEM_PROMPT
+    memories = MemoryStore(MEMORY_PATH).retrieve(instruction, k=int(os.getenv("MEMORY_RETRIEVE_K", "5")))
+    memory_block = format_memories_for_prompt(memories)
+    if not memory_block:
+        return SYSTEM_PROMPT
+    return f"{SYSTEM_PROMPT}\n\n{memory_block}\n\n请优先复用这些经验，但不要照抄无关答案。"
+
+
+def _is_success(pred: str, answer: str = "", reached_max_steps: bool = False) -> bool:
+    if reached_max_steps or not pred.strip():
+        return False
+    if answer:
+        return normalize_answer(pred) == normalize_answer(answer)
+    return True
+
+
+def _tool_call_obj(raw: dict) -> SimpleNamespace:
+    fn = raw.get("function", {}) or {}
+    return SimpleNamespace(
+        id=raw.get("id", ""),
+        function=SimpleNamespace(
+            name=fn.get("name", ""),
+            arguments=fn.get("arguments", "{}") or "{}",
+        ),
+    )
+
+
+def _merge_stream_tool_call(parts: dict[int, dict], delta_tool_call) -> None:
+    idx = getattr(delta_tool_call, "index", None)
+    if idx is None:
+        idx = 0
+    cur = parts.setdefault(
+        int(idx),
+        {"id": "", "type": "function", "function": {"name": "", "arguments": ""}, "index": int(idx)},
+    )
+    if getattr(delta_tool_call, "id", None):
+        cur["id"] = delta_tool_call.id
+    if getattr(delta_tool_call, "type", None):
+        cur["type"] = delta_tool_call.type
+    fn = getattr(delta_tool_call, "function", None)
+    if fn is not None:
+        if getattr(fn, "name", None):
+            cur["function"]["name"] += fn.name
+        if getattr(fn, "arguments", None):
+            cur["function"]["arguments"] += fn.arguments
+
+
+def _chat_completion(client: OpenAI, request_kwargs: dict) -> dict:
+    """Call Qwen through OpenAI-compatible API.
+
+    DashScope requires stream=True when extra_body.enable_thinking is enabled,
+    so the harness aggregates stream chunks into the same shape the loop needs.
+    """
+    if not ENABLE_THINKING:
+        request_kwargs = dict(request_kwargs)
+        request_kwargs.pop("extra_body", None)
+        response = client.chat.completions.create(**request_kwargs)
+        choice = response.choices[0]
+        msg = choice.message
+        raw_tool_calls = []
+        for tc in getattr(msg, "tool_calls", None) or []:
+            raw_tool_calls.append(tc.model_dump() if hasattr(tc, "model_dump") else tc)
+        usage = getattr(response, "usage", None)
+        return {
+            "content": msg.content or "",
+            "reasoning_content": getattr(msg, "reasoning_content", "") or "",
+            "finish_reason": choice.finish_reason,
+            "tool_calls_data": raw_tool_calls,
+            "tool_calls": [_tool_call_obj(x) for x in raw_tool_calls],
+            "total_tokens": getattr(usage, "total_tokens", None) or "",
+        }
+
+    stream_kwargs = dict(request_kwargs)
+    stream_kwargs["stream"] = True
+    stream_kwargs["stream_options"] = {"include_usage": True}
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    tool_call_parts: dict[int, dict] = {}
+    finish_reason = None
+    total_tokens = ""
+
+    stream = client.chat.completions.create(**stream_kwargs)
+    for chunk in stream:
+        if getattr(chunk, "usage", None):
+            total_tokens = getattr(chunk.usage, "total_tokens", None) or total_tokens
+        if not getattr(chunk, "choices", None):
+            continue
+        choice = chunk.choices[0]
+        finish_reason = choice.finish_reason or finish_reason
+        delta = choice.delta
+        if getattr(delta, "reasoning_content", None):
+            reasoning_parts.append(delta.reasoning_content)
+        if getattr(delta, "content", None):
+            content_parts.append(delta.content)
+        for tc in getattr(delta, "tool_calls", None) or []:
+            _merge_stream_tool_call(tool_call_parts, tc)
+
+    tool_calls_data = [tool_call_parts[i] for i in sorted(tool_call_parts)]
+    return {
+        "content": "".join(content_parts),
+        "reasoning_content": "".join(reasoning_parts),
+        "finish_reason": finish_reason,
+        "tool_calls_data": tool_calls_data,
+        "tool_calls": [_tool_call_obj(x) for x in tool_calls_data],
+        "total_tokens": total_tokens,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -271,21 +427,40 @@ def run_task(
     instruction = task["instruction"]
     image_b64   = task.get("image_b64")
     image_url   = task.get("image_url")
+    gold_answer = task.get("answer", "")
+    evolved     = bool(task.get("evolved", True))
 
     logger.info("run_task: task_id=%s", task_id)
 
-    traj   = Trajectory(task_id, output_dir=trajectory_dir)
-    client = OpenAI(base_url=llm_base_url, api_key="EMPTY")
+    reset_trajectory = bool(task.get("reset_trajectory", True))
+    traj   = Trajectory(task_id, output_dir=trajectory_dir, reset=reset_trajectory)
+    client = OpenAI(
+        base_url=llm_base_url or LLM_BASE_URL,
+        api_key=LLM_API_KEY if (llm_base_url or LLM_BASE_URL).startswith("https://dashscope") else (LLM_API_KEY or "EMPTY"),
+    )
+    model_name = model_name or MODEL_NAME
+    started_at = time.time()
+    tool_call_count = 0
+    reached_max_steps = False
 
     # ------------------------------------------------------------------ step 0
     # Write system turn
-    traj.write(Role.SYSTEM, SYSTEM_PROMPT, step_id=0)
+    system_prompt = _build_system_prompt(instruction, evolved=evolved)
+    traj.write(Role.SYSTEM, system_prompt, step_id=0)
 
     # Build user message (optionally include image)
-    if image_b64 and image_url:
+    if image_b64:
+        text = instruction
+        if image_url:
+            text += "\n输入图像的在线链接：" + image_url
         user_content = [
-            {"type": "text",      "text": instruction + "输入图像的在线链接：" + image_url},
+            {"type": "text",      "text": text},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+        ]
+    elif image_url:
+        user_content = [
+            {"type": "text", "text": instruction + "\n输入图像的在线链接：" + image_url},
+            {"type": "image_url", "image_url": {"url": image_url}},
         ]
     else:
         user_content = instruction
@@ -314,7 +489,7 @@ def run_task(
             request_kwargs["tool_choice"] = "auto"
 
         try:
-            response = client.chat.completions.create(**request_kwargs)
+            llm_output = _chat_completion(client, request_kwargs)
         except Exception as exc:
             logger.error("LLM call failed: %s", exc, exc_info=True)
             traj.write(
@@ -324,21 +499,16 @@ def run_task(
             )
             break
 
-        choice  = response.choices[0]
-        msg     = choice.message
-        print(msg)
-        content = msg.content or ""
-        reasoning_content = msg.reasoning_content or ""
-        total_tokens = response.usage.total_tokens or ""
+        content = llm_output["content"]
+        reasoning_content = llm_output["reasoning_content"]
+        total_tokens = llm_output["total_tokens"]
+        finish_reason = llm_output["finish_reason"]
 
         # 调试模式下强制忽略 tool_calls（虽然不传 tools 通常不会出现）
-        tool_calls = None if DISABLE_TOOLS else msg.tool_calls
+        tool_calls = None if DISABLE_TOOLS else llm_output["tool_calls"]
 
         # Write assistant turn
-        tool_calls_data = (
-            [tc.model_dump() for tc in tool_calls]
-            if tool_calls else []
-        )
+        tool_calls_data = llm_output["tool_calls_data"] if tool_calls else []
         
         extra = {}
         
@@ -358,11 +528,11 @@ def run_task(
 
         if content:
             logger.info("assistant: %s", content[:200])
-        logger.info("finish_reason=%s, has_tool_calls=%s", choice.finish_reason, bool(tool_calls))
+        logger.info("finish_reason=%s, has_tool_calls=%s", finish_reason, bool(tool_calls))
 
         # Done?
         # 标准退出条件：没有 tool_calls 时就结束（finish_reason 可能是 stop / length 等）
-        if not tool_calls and choice.finish_reason and content != "":
+        if not tool_calls and finish_reason and content != "":
             final_answer = content
             logger.info("Task complete at step %d", step)
             break
@@ -372,6 +542,7 @@ def run_task(
 
         # -------------------------------------------------------- tool calls
         for tc in tool_calls:
+            tool_call_count += 1
             fn_name = tc.function.name
             try:
                 fn_args = json.loads(tc.function.arguments)
@@ -407,14 +578,88 @@ def run_task(
             )
     else:
         logger.warning("Reached max_steps=%d without finish_reason=stop", max_steps)
-        final_answer = "[HARNESS] Max steps reached. Last assistant message above."
+        reached_max_steps = True
+        final_answer = final_answer or "[HARNESS] Max steps reached. Last assistant message above."
 
     summary = traj.summary()
+    pred_answer = extract_answer(final_answer)
+    success = _is_success(pred_answer, str(gold_answer), reached_max_steps)
+    elapsed = time.time() - started_at
+    summary.update(
+        {
+            "pred": pred_answer,
+            "answer": gold_answer,
+            "success": success,
+            "elapsed_sec": elapsed,
+            "tool_call_count": tool_call_count,
+            "reached_max_steps": reached_max_steps,
+        }
+    )
     logger.info("Trajectory summary: %s", summary)
+
+    # ---------------------------------------------------------------- reflection + memory
+    # Reflection is triggered on failure and also on optionally successful tasks
+    # if RECORD_SUCCESS_MEMORY=1.  This gives the harness a real
+    # try -> reflect -> remember -> reuse loop without hiding benchmark outputs.
+    should_reflect = ENABLE_REFLECTION and (not success)
+    should_record_success = ENABLE_MEMORY and os.getenv("RECORD_SUCCESS_MEMORY", "1") == "1" and success
+    if ENABLE_MEMORY and (should_reflect or should_record_success):
+        trajectory_rows = traj.read_all()
+        if should_reflect:
+            reflection = reflect(
+                instruction=instruction,
+                pred=pred_answer,
+                answer=str(gold_answer or ""),
+                trajectory=trajectory_rows,
+                trajectory_summary=summary,
+                model_name=os.getenv("REFLECTION_MODEL_NAME") or model_name,
+                base_url=os.getenv("REFLECTION_BASE_URL") or llm_base_url,
+                api_key=os.getenv("REFLECTION_API_KEY") or LLM_API_KEY,
+            )
+            lesson = reflection.reusable_memory or reflection.failure_reason
+            strategy = reflection.corrected_strategy
+            tags = reflection.tags
+            traj.write(
+                Role.SYSTEM,
+                json.dumps(
+                    {
+                        "reflection": {
+                            "failure_reason": reflection.failure_reason,
+                            "corrected_strategy": strategy,
+                            "reusable_memory": lesson,
+                            "tags": tags,
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                step_id=step if "step" in locals() else None,
+                extra={"event": "reflection"},
+            )
+            outcome = "failure"
+        else:
+            lesson = "该任务成功完成；后续相似问题应复用有效证据链，并保持最终答案格式简洁。"
+            strategy = "先识别题目核心实体/关系，再用工具核验缺口；最终只输出 <answer>答案</answer>。"
+            tags = ["success", "format"]
+            outcome = "success"
+
+        MemoryStore(MEMORY_PATH).append(
+            MemoryItem(
+                task_id=task_id,
+                instruction=instruction,
+                outcome=outcome,
+                lesson=lesson,
+                strategy=strategy,
+                tags=tags,
+                answer=str(gold_answer or ""),
+                pred=pred_answer,
+            )
+        )
 
     return {
         "task_id":         task_id,
         "answer":          final_answer,
+        "pred":            pred_answer,
+        "success":         success,
         "steps":           step,
         "trajectory_path": str(traj.path),
         "summary":         summary,
@@ -437,6 +682,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--traj-dir",          default="trajectories", help="Trajectory output directory")
     p.add_argument("--image",             default=None, help="Local path to input image (optional)")
     p.add_argument("--image-url",         default=None, help="Online path to input image (optional)")
+    p.add_argument("--answer",            default="", help="Gold answer for evaluation/reflection (optional)")
+    p.add_argument("--baseline",          action="store_true", help="Disable memory injection for baseline runs")
     return p.parse_args()
 
 
@@ -457,6 +704,8 @@ if __name__ == "__main__":
         "instruction": args.instruction,
         "image_b64":   image_b64,
         "image_url":   image_url,
+        "answer":      args.answer,
+        "evolved":     not args.baseline,
     }
     if args.task_id:
         task["id"] = args.task_id

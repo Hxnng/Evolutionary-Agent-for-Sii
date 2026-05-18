@@ -28,11 +28,13 @@ class Trajectory:
     }
     """
 
-    def __init__(self, task_id: str, output_dir: str = "trajectories"):
+    def __init__(self, task_id: str, output_dir: str = "trajectories", reset: bool = False):
         self.task_id = task_id
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         self.path = output_path / f"{task_id}.jsonl"
+        if reset and self.path.exists():
+            self.path.unlink()
 
     # ------------------------------------------------------------------
     # Write
@@ -68,8 +70,24 @@ class Trajectory:
         """Return all recorded turns as a list of dicts."""
         if not self.path.exists():
             return []
-        lines = self.path.read_text(encoding="utf-8").splitlines()
-        return [json.loads(line) for line in lines if line.strip()]
+        rows = []
+        with self.path.open("r", encoding="utf-8", errors="replace") as f:
+            for line_no, line in enumerate(f, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    rows.append(
+                        {
+                            "timestamp": time.time(),
+                            "step_id": None,
+                            "role": Role.TOOL.value,
+                            "content": f"[TRAJECTORY WARNING] skipped malformed JSONL line {line_no}",
+                            "tool_call_id": None,
+                        }
+                    )
+        return rows
 
     def to_messages(self) -> list[dict]:
         """
@@ -81,7 +99,10 @@ class Trajectory:
         for entry in self.read_all():
             role = entry["role"]
 
-            msg: dict = {"role": role, "content": entry["content"] or ""}
+            content = entry["content"] or ""
+            if not isinstance(content, (str, list)):
+                content = json.dumps(content, ensure_ascii=False)
+            msg: dict = {"role": role, "content": content}
 
             # Re-attach tool_calls list so the LLM can continue the loop
             if role == "assistant" and entry.get("tool_calls"):

@@ -31,8 +31,11 @@ from __future__ import annotations
 
 import logging
 import re
+from html import unescape
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
+
+import requests
 
 from sandbox_client import BrowserSandboxClient, get_sandbox
 
@@ -44,6 +47,7 @@ logger = logging.getLogger("harness.tools.browser")
 # ---------------------------------------------------------------------------
 _RE_BLANK_LINES = re.compile(r"\n{3,}")
 _RE_INLINE_WS   = re.compile(r"[ \t]{2,}")
+_HTTP_PAGE_STATE: dict[str, str] = {"url": "", "title": "", "text": ""}
 
 
 def _clean_text(s: str) -> str:
@@ -103,6 +107,47 @@ def _safe_title(cli: BrowserSandboxClient, tab_id: Optional[str] = None) -> dict
         return {"title": "", "url": ""}
 
 
+def _html_to_text(html: str) -> str:
+    html = re.sub(r"(?is)<(script|style|noscript).*?</\1>", " ", html or "")
+    html = re.sub(r"(?i)<br\s*/?>", "\n", html)
+    html = re.sub(r"(?i)</(p|div|li|h[1-6]|tr)>", "\n", html)
+    html = re.sub(r"(?s)<[^>]+>", " ", html)
+    return _clean_text(unescape(html))
+
+
+def _html_title(html: str) -> str:
+    m = re.search(r"(?is)<title[^>]*>(.*?)</title>", html or "")
+    return _clean_text(unescape(re.sub(r"(?s)<[^>]+>", " ", m.group(1)))) if m else ""
+
+
+def _http_navigate_fallback(url: str, max_text: int, timeout: int, reason: str) -> dict:
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; sii-harness/0.1)"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=max(1, int(timeout)), allow_redirects=True)
+        resp.raise_for_status()
+        text = _html_to_text(resp.text)
+        title = _html_title(resp.text)
+    except Exception as exc:  # noqa: BLE001
+        return _err(
+            f"browser-service unavailable and HTTP fallback failed: {type(exc).__name__}: {exc}",
+            browser_service_error=reason,
+            fallback="requests",
+        )
+
+    _HTTP_PAGE_STATE.update({"url": resp.url, "title": title, "text": text})
+    txt, truncated = _truncate(text, int(max_text))
+    return {
+        "ok": True,
+        "url": resp.url,
+        "title": title,
+        "wait_until": "http_fallback",
+        "text_preview": txt,
+        "truncated": truncated,
+        "fallback": "requests",
+        "browser_service_error": reason,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Public tools
 # ---------------------------------------------------------------------------
@@ -131,7 +176,9 @@ def browser_navigate(
         cli = get_sandbox()
         nav = cli.navigate(real_url, wait_until=wu, timeout_ms=timeout_ms)
     except Exception as exc:  # noqa: BLE001
-        return _err(f"navigate failed: {type(exc).__name__}: {exc}")
+        reason = f"navigate failed: {type(exc).__name__}: {exc}"
+        logger.warning("%s; trying HTTP fallback", reason)
+        return _http_navigate_fallback(real_url, int(max_text), int(timeout), reason)
 
     out: dict = {
         "ok":         True,
@@ -163,9 +210,33 @@ def browser_get_text(max_chars: int = 5000, timeout: int = 15) -> dict:
         cli = get_sandbox()
         text, text_err = _safe_get_text(cli)
         if text_err is not None:
+            if _HTTP_PAGE_STATE.get("text"):
+                txt, truncated = _truncate(_HTTP_PAGE_STATE["text"], int(max_chars))
+                return {
+                    "ok": True,
+                    "url": _HTTP_PAGE_STATE.get("url", ""),
+                    "title": _HTTP_PAGE_STATE.get("title", ""),
+                    "text": txt,
+                    "truncated": truncated,
+                    "total_chars": len(_HTTP_PAGE_STATE["text"]),
+                    "fallback": "requests",
+                    "browser_service_error": text_err,
+                }
             return _err(text_err)
         meta = _safe_title(cli)
     except Exception as exc:  # noqa: BLE001
+        if _HTTP_PAGE_STATE.get("text"):
+            txt, truncated = _truncate(_HTTP_PAGE_STATE["text"], int(max_chars))
+            return {
+                "ok": True,
+                "url": _HTTP_PAGE_STATE.get("url", ""),
+                "title": _HTTP_PAGE_STATE.get("title", ""),
+                "text": txt,
+                "truncated": truncated,
+                "total_chars": len(_HTTP_PAGE_STATE["text"]),
+                "fallback": "requests",
+                "browser_service_error": f"{type(exc).__name__}: {exc}",
+            }
         return _err(f"get_text failed: {type(exc).__name__}: {exc}")
 
     txt, truncated = _truncate(text, int(max_chars))
