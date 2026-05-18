@@ -44,7 +44,7 @@ logger = logging.getLogger("harness.tools.search")
 # Config
 # ---------------------------------------------------------------------------
 # Proxy mode (recommended for the air-gapped GPU host).
-SEARCH_PROXY_URL    = os.getenv("SEARCH_PROXY_URL", "https://nat2-notebook-inspire.sii.edu.cn/ws-7c23bd1d-9bae-4238-803a-737a35480e18/project-39fbffc7-dcca-4fb4-b43a-2f69f72f7e52/user-37373cef-1fa2-4dbb-ab3e-5c803eb41384/vscode/3c98f013-c5a7-4656-b5d9-37c8b26493ad/8c9601c0-e5ca-4c32-8e55-4aac78cc4e09/proxy/1227/").rstrip("/")
+SEARCH_PROXY_URL    = os.getenv("SEARCH_PROXY_URL", "").rstrip("/")
 SEARCH_PROXY_TOKEN  = os.getenv("SEARCH_PROXY_TOKEN", "") or os.getenv(
     "PROXY_API_TOKEN", ""
 )
@@ -69,8 +69,8 @@ except Exception:  # noqa: BLE001
     SEARCH_PROXY_EXTRA_HEADERS = {}
 
 # Direct mode (only used when SEARCH_PROXY_URL is empty).
-SERPER_API_KEY      = os.getenv("SERPER_API_KEY", "a42e8b4adb370b5c866a2c6feb870641691c5901")
-JINA_API_KEY        = os.getenv("JINA_API_KEY", "jina_27b632dc368a4d878d77a086367a1493HIydGZpZQJhxBWjflZBGmr89R44M")
+SERPER_API_KEY      = os.getenv("SERPER_API_KEY", "")
+JINA_API_KEY        = os.getenv("JINA_API_KEY", "")
 IMAGE_UPLOADER      = os.getenv("IMAGE_UPLOADER", "0x0")
 
 SERPER_SEARCH_URL   = "https://google.serper.dev/search"
