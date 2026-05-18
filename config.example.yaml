@@ -1,0 +1,31 @@
+agent:
+  name: my-agent
+  max_tool_iterations: 6
+  max_consecutive_tool_errors: 3
+
+runtime:
+  home: .my-agent
+  checkpoint: json
+
+sandbox:
+  use: docker
+  image: python:3-slim
+  timeout: 60
+
+tools:
+  search:
+    enabled: true
+    providers:
+      - tavily
+      - ddg_search
+      - serper
+      - jina_ai
+      - infoquest
+      - firecrawl
+      - exa
+      - image_search
+  browsergym:
+    enabled: false
+    env_id: browsergym/openended
+    start_url: https://www.google.com/
+
