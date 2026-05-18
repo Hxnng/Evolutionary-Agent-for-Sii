@@ -52,6 +52,10 @@ python -B task_runner.py \
   --max-steps 8
 ```
 
+轨迹文件按 `--task-id` 命名。上面的命令会覆盖生成
+`trajectories/smoke_001.jsonl`；旧的 `trajectories/my_task_001.jsonl`
+只是之前任务留下的历史文件，不会被这条命令更新。
+
 ## 主要文件
 
 - `task_runner.py`：ReAct 主循环、百炼流式调用、工具分发、轨迹、反思/记忆闭环。

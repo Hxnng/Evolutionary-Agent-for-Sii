@@ -8,8 +8,8 @@ to Serper / Jina / 0x0 from this process, using `SERPER_API_KEY` and
 The two public tool functions keep identical signatures and return shapes
 so the LLM tool schema does not change between modes::
 
-    search_text(query, top_k=5, fetch=True, max_chars=500) -> list[dict]
-    search_image(image, top_k=5, fetch=True, max_chars=500) -> list[dict]
+    search_text(query, top_k=5, fetch=True, max_chars=3000) -> list[dict]
+    search_image(image, top_k=5, fetch=True, max_chars=1500) -> list[dict]
 
 Each result dict::
 
@@ -230,7 +230,7 @@ def search_text(
     query: str,
     top_k: int = 3,
     fetch: bool = True,
-    max_chars: int = 500,
+    max_chars: int = 3000,
 ) -> list[dict]:
     """Text search on Google (via Serper) optionally enriched with full-text via Jina.
 
@@ -269,7 +269,7 @@ def search_image(
     image: str,
     top_k: int = 1,
     fetch: bool = True,
-    max_chars: int = 500,
+    max_chars: int = 1500,
 ) -> list[dict]:
     """Reverse image search via Google Lens (Serper /lens).
 

@@ -148,6 +148,18 @@ def _http_navigate_fallback(url: str, max_text: int, timeout: int, reason: str) 
     }
 
 
+def _looks_rate_limited(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return (
+        '"code":429' in lowered
+        or '"status":429' in lowered
+        or "rate limit" in lowered
+        or "ratelimittriggerederror" in lowered
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public tools
 # ---------------------------------------------------------------------------
@@ -194,6 +206,14 @@ def browser_navigate(
             txt, truncated = _truncate(text, int(max_text))
             out["text_preview"] = txt
             out["truncated"]    = truncated
+            if _looks_rate_limited(txt):
+                return _err(
+                    "browser page reports rate limit / 429",
+                    url=out["url"],
+                    title=out["title"],
+                    wait_until=wu,
+                    text_preview=txt,
+                )
         else:
             out["text_preview"] = ""
             out["text_error"]   = text_err
@@ -211,6 +231,7 @@ def browser_get_text(max_chars: int = 5000, timeout: int = 15) -> dict:
     try:
         cli = get_sandbox()
         text, text_err = _safe_get_text(cli)
+        meta = _safe_title(cli)
         if text_err is not None:
             if _HTTP_PAGE_STATE.get("text"):
                 txt, truncated = _truncate(_HTTP_PAGE_STATE["text"], int(max_chars))
@@ -225,7 +246,6 @@ def browser_get_text(max_chars: int = 5000, timeout: int = 15) -> dict:
                     "browser_service_error": text_err,
                 }
             return _err(text_err)
-        meta = _safe_title(cli)
     except Exception as exc:  # noqa: BLE001
         if _HTTP_PAGE_STATE.get("text"):
             txt, truncated = _truncate(_HTTP_PAGE_STATE["text"], int(max_chars))
@@ -240,6 +260,9 @@ def browser_get_text(max_chars: int = 5000, timeout: int = 15) -> dict:
                 "browser_service_error": f"{type(exc).__name__}: {exc}",
             }
         return _err(f"get_text failed: {type(exc).__name__}: {exc}")
+
+    if not text.strip() and meta.get("url") in {"", "about:blank"}:
+        return _err("no page loaded; call browser_navigate first", url=meta.get("url", ""), title=meta.get("title", ""))
 
     txt, truncated = _truncate(text, int(max_chars))
     return {

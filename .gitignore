@@ -7,3 +7,5 @@ venv/
 memory/
 runs/
 trajectories/
+**/trajectories/
+**/.ipynb_checkpoints/

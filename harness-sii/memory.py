@@ -97,7 +97,10 @@ class MemoryStore:
 def format_memories_for_prompt(memories: list[dict[str, Any]]) -> str:
     if not memories:
         return ""
-    lines = ["## 可复用经验记忆"]
+    lines = [
+        "## 可复用经验记忆",
+        "以下内容只作为工具使用和解题策略建议，不是当前题目的事实证据；若与当前搜索/页面结果冲突，必须以当前工具证据为准。",
+    ]
     for i, memory in enumerate(memories, start=1):
         outcome = memory.get("outcome", "unknown")
         lesson = str(memory.get("lesson", "")).strip()
