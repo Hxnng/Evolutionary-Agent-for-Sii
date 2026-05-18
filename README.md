@@ -29,7 +29,7 @@ browser-service/          # 官方浏览器沙盒服务
 ```bash
 conda create -n sii-harness python=3.11 -y
 conda activate sii-harness
-cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii
+cd ./harness-sii
 pip install -r requirements.txt
 ```
 
@@ -40,7 +40,7 @@ pip install -r requirements.txt
 复制模板并填写 key：
 
 ```bash
-cd /Users/a1234/sii/Evolutionary-Agent-for-Sii
+cd ./Evolutionary-Agent-for-Sii
 cp .env.example harness-sii/.env
 ```
 
@@ -68,7 +68,7 @@ ENABLE_MEMORY=1
 先测搜索工具，确认 Serper/Jina 可用：
 
 ```bash
-cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii
+cd ./Evolutionary-Agent-for-Sii/harness-sii
 python -B tools/search_tool.py text "上海创智学院 谢源老师 代表作" --top-k 1 --no-fetch
 ```
 
@@ -86,7 +86,7 @@ python -B tools/search_tool.py text "上海创智学院 谢源老师 代表作" 
 
 ```bash
 conda activate sii-harness
-cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/browser-service
+cd ./Evolutionary-Agent-for-Sii/browser-service
 bash run.sh
 ```
 
@@ -115,7 +115,7 @@ curl http://127.0.0.1:8080/health
 ## 5. 完整 Agent Smoke Test
 
 ```bash
-cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii
+cd ./Evolutionary-Agent-for-Sii/harness-sii
 python -B task_runner.py \
   --instruction "请查询上海创智学院谢源老师的代表作。" \
   --task-id smoke_001 \
@@ -158,7 +158,7 @@ python -B task_runner.py \
 无进化基线：
 
 ```bash
-cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii
+cd ./Evolutionary-Agent-for-Sii/harness-sii
 python -B evaluate.py \
   --dataset ../datasets/simplevqa_100.jsonl \
   --output runs/baseline/simplevqa_predictions.jsonl \
@@ -240,7 +240,7 @@ python -B -m py_compile harness-sii/*.py harness-sii/tools/*.py
 说明浏览器服务没有启动。运行：
 
 ```bash
-cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/browser-service
+cd ./Evolutionary-Agent-for-Sii/browser-service
 bash run.sh
 ```
 
