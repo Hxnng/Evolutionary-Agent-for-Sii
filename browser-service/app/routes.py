@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from playwright.async_api import Error as PlaywrightError
 
 from .browser import manager
 from .config import settings
@@ -170,7 +171,12 @@ async def navigate(req: NavigateReq) -> NavigateResp:
         tab = sess.tabs[sess.active_tab_id]  # type: ignore[index]
     else:
         sess, tab = _resolve(req)
-    await tab.page.goto(req.url, wait_until=req.wait_until, timeout=req.timeout_ms)
+    try:
+        await tab.page.goto(req.url, wait_until=req.wait_until, timeout=req.timeout_ms)
+    except PlaywrightError as e:
+        msg = f"navigate failed: {type(e).__name__}: {e}"
+        logger.warning("%s", msg)
+        return NavigateResp(success=False, message=msg, url=req.url, title="")
     return NavigateResp(url=tab.page.url, title=await tab.page.title())
 
 

@@ -175,6 +175,8 @@ def browser_navigate(
     try:
         cli = get_sandbox()
         nav = cli.navigate(real_url, wait_until=wu, timeout_ms=timeout_ms)
+        if nav.get("success") is False:
+            raise RuntimeError(nav.get("message") or f"navigate failed: {nav}")
     except Exception as exc:  # noqa: BLE001
         reason = f"navigate failed: {type(exc).__name__}: {exc}"
         logger.warning("%s; trying HTTP fallback", reason)
