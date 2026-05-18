@@ -44,9 +44,9 @@ When a tool call fails:
 </error_observation_policy>
 
 <workspace>
-- Default project root: `/root/autodl-tmp/auto_agent/my-agent`
-- Dataset root: `/root/autodl-tmp/datasets`
-- Model root: `/root/autodl-tmp/models`
+- Default project root: current repository root.
+- Dataset root: read `SIMPLEVQA_ROOT` or the active run config.
+- Model root: read `LOCAL_MODEL_PATH` or the active run config.
 - Write generated configs, prompts, scripts, logs, and reports under the relevant project directory.
 - Preserve existing user files. Do not delete or overwrite previous outputs unless the user asks for a fresh run or the command explicitly says so.
 </workspace>

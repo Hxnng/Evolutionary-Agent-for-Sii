@@ -23,8 +23,13 @@ except ImportError:  # pragma: no cover
 IMAGE_MARKER_RE = re.compile(r"^IMAGE_PATH:\s*(?P<path>.+)$", re.MULTILINE)
 
 
-class DashScopeAgentModelClient:
-    """OpenAI-compatible DashScope client with prompt-level tool-call JSON parsing."""
+class OpenAICompatibleAgentModelClient:
+    """OpenAI-compatible chat client with prompt-level tool-call JSON parsing.
+
+    The same client works for DashScope/Bailian compatible-mode APIs and local
+    OpenAI-compatible servers such as vLLM. Provider-specific options can be
+    passed through ``extra_body``.
+    """
 
     def __init__(
         self,
@@ -32,12 +37,14 @@ class DashScopeAgentModelClient:
         base_url: str,
         model: str,
         api_key: str | None = None,
-        api_key_env: str | None = "DASHSCOPE_API_KEY",
+        api_key_env: str | None = "OPENAI_API_KEY",
         timeout: int = 180,
-        enable_thinking: bool = True,
+        enable_thinking: bool | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.0,
         stream: bool = True,
+        extra_body: dict[str, Any] | None = None,
+        provider_name: str = "OpenAI-compatible",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -48,6 +55,8 @@ class DashScopeAgentModelClient:
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.stream = stream
+        self.extra_body = extra_body or {}
+        self.provider_name = provider_name
 
     async def generate(self, messages: list[Message], tools_schema: list[dict]) -> ModelOutput:
         payload = {
@@ -55,11 +64,12 @@ class DashScopeAgentModelClient:
             "messages": self._convert_messages(messages, tools_schema),
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
-            "extra_body": None,
-            "enable_thinking": self.enable_thinking,
             "stream": self.stream,
         }
-        payload.pop("extra_body", None)
+        if self.enable_thinking is not None:
+            payload["enable_thinking"] = self.enable_thinking
+        if self.extra_body:
+            payload["extra_body"] = self.extra_body
         if self.stream:
             content, reasoning = self._post_stream(payload)
         else:
@@ -131,7 +141,7 @@ The final answer must be short and contain no explanation.
 """
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        api_key = os.getenv(self.api_key_env) if self.api_key_env else self.api_key
+        api_key = self._api_key()
         if not api_key:
             raise RuntimeError(f"Missing API key. Set {self.api_key_env or 'api_key'}.")
         request = urllib.request.Request(
@@ -146,10 +156,10 @@ The final answer must be short and contain no explanation.
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"DashScope HTTP {exc.code}: {body or exc.reason}") from exc
+            raise RuntimeError(f"{self.provider_name} HTTP {exc.code}: {body or exc.reason}") from exc
 
     def _post_stream(self, payload: dict[str, Any]) -> tuple[str, str | None]:
-        api_key = os.getenv(self.api_key_env) if self.api_key_env else self.api_key
+        api_key = self._api_key()
         if not api_key:
             raise RuntimeError(f"Missing API key. Set {self.api_key_env or 'api_key'}.")
         request = urllib.request.Request(
@@ -173,7 +183,7 @@ The final answer must be short and contain no explanation.
                         break
                     chunk = json.loads(data)
                     if chunk.get("error"):
-                        raise RuntimeError(f"DashScope stream error: {chunk['error']}")
+                        raise RuntimeError(f"{self.provider_name} stream error: {chunk['error']}")
                     choices = chunk.get("choices") or []
                     if not choices:
                         continue
@@ -183,11 +193,16 @@ The final answer must be short and contain no explanation.
                     if delta.get("content"):
                         content_parts.append(delta["content"])
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"DashScope stream returned invalid JSON line: {data[:500]}") from exc
+            raise RuntimeError(f"{self.provider_name} stream returned invalid JSON line: {data[:500]}") from exc
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"DashScope HTTP {exc.code}: {body or exc.reason}") from exc
+            raise RuntimeError(f"{self.provider_name} HTTP {exc.code}: {body or exc.reason}") from exc
         return "".join(content_parts).strip(), "".join(reasoning_parts).strip() or None
+
+    def _api_key(self) -> str | None:
+        if self.api_key_env:
+            return os.getenv(self.api_key_env) or self.api_key
+        return self.api_key
 
     def _parse_model_content(self, content: str, reasoning: str | None) -> ModelOutput:
         parsed = self._loads_json(content)
@@ -237,3 +252,35 @@ The final answer must be short and contain no explanation.
             {"type": "text", "text": text},
             {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}},
         ]
+
+
+class DashScopeAgentModelClient(OpenAICompatibleAgentModelClient):
+    """DashScope/Bailian convenience wrapper."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model: str,
+        api_key: str | None = None,
+        api_key_env: str | None = "DASHSCOPE_API_KEY",
+        timeout: int = 180,
+        enable_thinking: bool | None = True,
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+        stream: bool = True,
+        extra_body: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            timeout=timeout,
+            enable_thinking=enable_thinking,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=stream,
+            extra_body=extra_body,
+            provider_name="DashScope",
+        )

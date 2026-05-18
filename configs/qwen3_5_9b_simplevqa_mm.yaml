@@ -1,31 +1,27 @@
 # Qwen3.5-9B multimodal SimpleVQA evaluation config.
 # This config is for the image-capable Qwen/Qwen3.5-9B checkpoint.
-# It expects SimpleVQA images to be extracted from:
-#   /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_datasets.zip
-# into:
-#   /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_datasets
+# It expects SimpleVQA images under SIMPLEVQA_IMAGE_ROOT.
 
 run:
   name: qwen3_5_9b_simplevqa_mm
   task: multimodal_visual_question_answering
-  output_dir: /root/autodl-tmp/auto_agent/my-agent/runs/qwen3_5_9b_simplevqa_mm
+  output_dir: runs/qwen3_5_9b_simplevqa_mm
   seed: 42
   max_samples: null
   resume: true
   request_concurrency: 8
 
 model:
-  name: Qwen3.5-9B
+  name: ${MODEL_NAME:-qwen3.5-9b}
   modality: image_text_to_text
   vision_input: supported
   provider: openai_compatible
-  model_path: /root/autodl-tmp/models/Qwen3.5-9B
-  base_url: http://127.0.0.1:8010/v1
+  model_path: ${LOCAL_MODEL_PATH:-./models/Qwen3.5-9B}
+  base_url: ${MODEL_BASE_URL:-http://127.0.0.1:8010/v1}
   base_urls:
-    - http://127.0.0.1:8010/v1
-    - http://127.0.0.1:8011/v1
-  api_key: EMPTY
-  served_model_name: qwen3.5-9b
+    - ${MODEL_BASE_URL:-http://127.0.0.1:8010/v1}
+  api_key: ${MODEL_API_KEY:-EMPTY}
+  served_model_name: ${MODEL_NAME:-qwen3.5-9b}
   trust_remote_code: true
   dtype: bfloat16
   max_model_len: 8192
@@ -38,8 +34,7 @@ model:
     limit_mm_per_prompt:
       image: 1
     replica_commands:
-      - CUDA_VISIBLE_DEVICES=0 /root/autodl-tmp/conda_envs/my_agent/bin/python -m vllm.entrypoints.openai.api_server --model /root/autodl-tmp/models/Qwen3.5-9B --served-model-name qwen3.5-9b --trust-remote-code --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.90 --max-num-seqs 16 --limit-mm-per-prompt image=1 --host 127.0.0.1 --port 8010
-      - CUDA_VISIBLE_DEVICES=1 /root/autodl-tmp/conda_envs/my_agent/bin/python -m vllm.entrypoints.openai.api_server --model /root/autodl-tmp/models/Qwen3.5-9B --served-model-name qwen3.5-9b --trust-remote-code --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.90 --max-num-seqs 16 --limit-mm-per-prompt image=1 --host 127.0.0.1 --port 8011
+      - CUDA_VISIBLE_DEVICES=0 python -m vllm.entrypoints.openai.api_server --model ${LOCAL_MODEL_PATH:-./models/Qwen3.5-9B} --served-model-name ${MODEL_NAME:-qwen3.5-9b} --trust-remote-code --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.90 --max-num-seqs 16 --limit-mm-per-prompt image=1 --host 127.0.0.1 --port 8010
 
 generation:
   temperature: 0.0
@@ -50,10 +45,10 @@ generation:
 dataset:
   name: SimpleVQA
   repo_id: m-a-p/SimpleVQA
-  root: /root/autodl-tmp/datasets/SimpleVQA
-  annotation_file: /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_final_modified.json
-  image_root: /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_datasets
-  image_archive: /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_datasets.zip
+  root: ${SIMPLEVQA_ROOT:-./datasets/SimpleVQA}
+  annotation_file: ${SIMPLEVQA_ANNOTATION_FILE:-./datasets/SimpleVQA/simpleVQA_final_modified.json}
+  image_root: ${SIMPLEVQA_IMAGE_ROOT:-./datasets/SimpleVQA/simpleVQA_datasets}
+  image_archive: ${SIMPLEVQA_IMAGE_ARCHIVE:-./datasets/SimpleVQA/simpleVQA_datasets.zip}
   split: test
 
   field_candidates:

@@ -7,8 +7,14 @@ runtime:
   home: .my-agent
   checkpoint: json
 
+model:
+  provider: ${MODEL_PROVIDER:-dashscope}
+  base_url: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+  name: ${MODEL_NAME:-qwen3.5-35b-a3b}
+  api_key_env: ${MODEL_API_KEY_ENV:-DASHSCOPE_API_KEY}
+
 sandbox:
-  use: docker
+  use: local
   image: python:3-slim
   timeout: 60
 
@@ -28,4 +34,3 @@ tools:
     enabled: false
     env_id: browsergym/openended
     start_url: https://www.google.com/
-

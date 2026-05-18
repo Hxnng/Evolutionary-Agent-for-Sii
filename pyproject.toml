@@ -5,12 +5,18 @@ description = "A lightweight agent harness inspired by DeerFlow, AutoGen, Browse
 requires-python = ">=3.11"
 dependencies = [
   "pydantic>=2.0",
+  "python-dotenv>=1.0",
+  "certifi>=2024.0.0",
+  "huggingface_hub>=0.23.0",
 ]
 
 [project.optional-dependencies]
 docker = ["docker>=7.0"]
 browser = ["browsergym-core>=0.13", "gymnasium>=0.29"]
 deerflow = ["langchain-core>=0.3"]
+search = ["ddgs>=9.0.0"]
+yaml = ["PyYAML>=6.0"]
+datasets = ["datasets>=2.19.0", "pandas>=2.0.0", "pyarrow>=15.0.0"]
 
 [tool.ruff]
 line-length = 120

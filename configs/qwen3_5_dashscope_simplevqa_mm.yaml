@@ -5,23 +5,23 @@
 run:
   name: qwen3_5_dashscope_simplevqa_mm
   task: multimodal_visual_question_answering_api
-  output_dir: /root/autodl-tmp/auto_agent/my-agent/runs/qwen3_5_dashscope_simplevqa_mm
+  output_dir: runs/qwen3_5_dashscope_simplevqa_mm
   seed: 42
   max_samples: null
   resume: true
   request_concurrency: 4
 
 model:
-  name: qwen3.5-35b-a3b
+  name: ${MODEL_NAME:-qwen3.5-35b-a3b}
   modality: image_text_to_text
   vision_input: supported
   provider: dashscope_openai_compatible
-  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  base_url: ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
   base_urls:
-    - https://dashscope.aliyuncs.com/compatible-mode/v1
-  api_key: sk-3fd51b9af38a4b8ca03b2845ad633864
-  api_key_env: null
-  served_model_name: qwen3.5-35b-a3b
+    - ${MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+  api_key: null
+  api_key_env: ${MODEL_API_KEY_ENV:-DASHSCOPE_API_KEY}
+  served_model_name: ${MODEL_NAME:-qwen3.5-35b-a3b}
 
 generation:
   temperature: 0.0
@@ -34,10 +34,10 @@ generation:
 dataset:
   name: SimpleVQA
   repo_id: m-a-p/SimpleVQA
-  root: /root/autodl-tmp/datasets/SimpleVQA
-  annotation_file: /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_final_modified.json
-  image_root: /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_datasets
-  image_archive: /root/autodl-tmp/datasets/SimpleVQA/simpleVQA_datasets.zip
+  root: ${SIMPLEVQA_ROOT:-./datasets/SimpleVQA}
+  annotation_file: ${SIMPLEVQA_ANNOTATION_FILE:-./datasets/SimpleVQA/simpleVQA_final_modified.json}
+  image_root: ${SIMPLEVQA_IMAGE_ROOT:-./datasets/SimpleVQA/simpleVQA_datasets}
+  image_archive: ${SIMPLEVQA_IMAGE_ARCHIVE:-./datasets/SimpleVQA/simpleVQA_datasets.zip}
   split: test
 
   field_candidates:

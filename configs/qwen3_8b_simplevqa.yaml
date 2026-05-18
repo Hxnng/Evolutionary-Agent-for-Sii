@@ -1,28 +1,27 @@
 # Qwen3-8B + SimpleVQA evaluation config for my-agent.
 # The model path points to the local Hugging Face format checkpoint.
-# The dataset path matches /root/autodl-tmp/datasets/download_simplevqa.sh.
+# Dataset/model paths are read from local relative defaults or .env overrides.
 
 run:
   name: qwen3_8b_simplevqa
   task: text_only_vqa_baseline
-  output_dir: /root/autodl-tmp/auto_agent/my-agent/runs/qwen3_8b_simplevqa
+  output_dir: runs/qwen3_8b_simplevqa
   seed: 42
   max_samples: null
   resume: true
   request_concurrency: 24
 
 model:
-  name: Qwen3-8B
+  name: ${MODEL_NAME:-qwen3-8b}
   modality: text
   vision_input: unsupported
   provider: openai_compatible
-  model_path: /root/autodl-tmp/models/Qwen3-8B
-  base_url: http://127.0.0.1:8000/v1
+  model_path: ${LOCAL_MODEL_PATH:-./models/Qwen3-8B}
+  base_url: ${MODEL_BASE_URL:-http://127.0.0.1:8000/v1}
   base_urls:
-    - http://127.0.0.1:8000/v1
-    - http://127.0.0.1:8001/v1
-  api_key: EMPTY
-  served_model_name: qwen3-8b
+    - ${MODEL_BASE_URL:-http://127.0.0.1:8000/v1}
+  api_key: ${MODEL_API_KEY:-EMPTY}
+  served_model_name: ${MODEL_NAME:-qwen3-8b}
   trust_remote_code: true
   dtype: bfloat16
   max_model_len: 8192
@@ -33,8 +32,7 @@ model:
     gpu_memory_utilization: 0.88
     max_num_seqs: 64
     replica_commands:
-      - CUDA_VISIBLE_DEVICES=0 /root/autodl-tmp/conda_envs/my_agent/bin/python -m vllm.entrypoints.openai.api_server --model /root/autodl-tmp/models/Qwen3-8B --served-model-name qwen3-8b --trust-remote-code --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.88 --max-num-seqs 64 --host 127.0.0.1 --port 8000
-      - CUDA_VISIBLE_DEVICES=1 /root/autodl-tmp/conda_envs/my_agent/bin/python -m vllm.entrypoints.openai.api_server --model /root/autodl-tmp/models/Qwen3-8B --served-model-name qwen3-8b --trust-remote-code --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.88 --max-num-seqs 64 --host 127.0.0.1 --port 8001
+      - CUDA_VISIBLE_DEVICES=0 python -m vllm.entrypoints.openai.api_server --model ${LOCAL_MODEL_PATH:-./models/Qwen3-8B} --served-model-name ${MODEL_NAME:-qwen3-8b} --trust-remote-code --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.88 --max-num-seqs 64 --host 127.0.0.1 --port 8000
 
 generation:
   temperature: 0.0
@@ -45,7 +43,7 @@ generation:
 dataset:
   name: SimpleVQA
   repo_id: m-a-p/SimpleVQA
-  root: /root/autodl-tmp/datasets/SimpleVQA
+  root: ${SIMPLEVQA_ROOT:-./datasets/SimpleVQA}
   split: test
   file_patterns:
     - "*.jsonl"
@@ -53,9 +51,9 @@ dataset:
     - "*.parquet"
     - "*.csv"
   image_root_candidates:
-    - /root/autodl-tmp/datasets/SimpleVQA
-    - /root/autodl-tmp/datasets/SimpleVQA/images
-    - /root/autodl-tmp/datasets/SimpleVQA/data
+    - ${SIMPLEVQA_ROOT:-./datasets/SimpleVQA}
+    - ${SIMPLEVQA_IMAGE_ROOT:-./datasets/SimpleVQA/images}
+    - ${SIMPLEVQA_DATA_ROOT:-./datasets/SimpleVQA/data}
 
   field_candidates:
     question:

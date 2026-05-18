@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import sys
 from dataclasses import dataclass
 from importlib import import_module
@@ -12,7 +13,7 @@ from urllib.request import Request, urlopen
 from my_agent.harness.types import ToolResult
 
 
-DEERFLOW_HARNESS = Path("/root/autodl-tmp/auto_agent/deer-flow/backend/packages/harness")
+DEERFLOW_HARNESS = os.getenv("DEERFLOW_HARNESS")
 
 SEARCH_TOOL_CANDIDATES = {
     "web_search": [
@@ -37,8 +38,10 @@ SEARCH_TOOL_CANDIDATES = {
 
 
 def _ensure_deerflow_path() -> None:
-    path = str(DEERFLOW_HARNESS)
-    if DEERFLOW_HARNESS.exists() and path not in sys.path:
+    if not DEERFLOW_HARNESS:
+        return
+    path = str(Path(DEERFLOW_HARNESS).expanduser())
+    if Path(path).exists() and path not in sys.path:
         sys.path.insert(0, path)
 
 
