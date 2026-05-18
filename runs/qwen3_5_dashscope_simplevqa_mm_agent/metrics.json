@@ -1,0 +1,9 @@
+{
+  "total": 2025,
+  "exact_match": 530,
+  "exact_accuracy": 0.2617283950617284,
+  "relaxed_exact_match": 829,
+  "relaxed_accuracy": 0.4093827160493827,
+  "tool_used": 1095,
+  "tool_use_rate": 0.5407407407407407
+}

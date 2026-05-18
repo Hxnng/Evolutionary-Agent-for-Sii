@@ -1,0 +1,101 @@
+{
+  "total": 2025,
+  "exact_match": 0,
+  "exact_accuracy": 0.0,
+  "relaxed_exact_match": 204,
+  "relaxed_accuracy": 0.10074074074074074,
+  "by_task_category": {
+    "图像中的人物和情感识别": {
+      "total": 275,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.025454545454545455
+    },
+    "图像中的地点和建筑识别": {
+      "total": 436,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.034403669724770644
+    },
+    "图像中的工具或设备功能识别": {
+      "total": 285,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.13333333333333333
+    },
+    "图像中的数量、方向和位置关系": {
+      "total": 205,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.2048780487804878
+    },
+    "图像中的文本和语言处理": {
+      "total": 204,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.024509803921568627
+    },
+    "图像中的时间、事件和活动识别": {
+      "total": 202,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.10891089108910891
+    },
+    "图像中的科学、逻辑和医学内容识别": {
+      "total": 102,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.22549019607843138
+    },
+    "图像中的艺术、文化和自然现象识别": {
+      "total": 184,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.13043478260869565
+    },
+    "图像中的食物、颜色和相关属性识别": {
+      "total": 132,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.21212121212121213
+    }
+  },
+  "by_subject_category": {
+    "中国历史和文化": {
+      "total": 196,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.08163265306122448
+    },
+    "工程、技术和应用": {
+      "total": 161,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.12422360248447205
+    },
+    "当代社会": {
+      "total": 233,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.11587982832618025
+    },
+    "影视和传媒": {
+      "total": 215,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.013953488372093023
+    },
+    "文学、教育和体育": {
+      "total": 273,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.11355311355311355
+    },
+    "生活": {
+      "total": 275,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.13090909090909092
+    },
+    "自然科学": {
+      "total": 256,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.1640625
+    },
+    "艺术": {
+      "total": 155,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.12903225806451613
+    },
+    "西方历史和文化": {
+      "total": 261,
+      "exact_accuracy": 0.0,
+      "relaxed_accuracy": 0.034482758620689655
+    }
+  }
+}

@@ -1,0 +1,16 @@
+[project]
+name = "my-agent"
+version = "0.1.0"
+description = "A lightweight agent harness inspired by DeerFlow, AutoGen, BrowserGym, and LangGraph runtime ideas without LangGraph tool-chain state machine."
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+docker = ["docker>=7.0"]
+browser = ["browsergym-core>=0.13", "gymnasium>=0.29"]
+deerflow = ["langchain-core>=0.3"]
+
+[tool.ruff]
+line-length = 120
