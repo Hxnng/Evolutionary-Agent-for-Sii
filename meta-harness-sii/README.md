@@ -101,6 +101,33 @@ index,problem,image,answer
 ...
 ```
 
+## 网络配置（GPU节点无法上网）
+
+由于GPU节点无法上网，需要通过CPU节点代理访问mimo API：
+
+### 1. 在CPU节点上启动mimo-proxy
+
+```bash
+cd harness-sii/mimo-proxy
+bash run.sh
+```
+
+### 2. 在GPU节点上设置SSH端口转发
+
+```bash
+ssh -L 8080:localhost:8080 cpu-node
+```
+
+### 3. 测试连接
+
+```bash
+curl http://localhost:8080/health
+```
+
+### 4. 运行Meta-Harness
+
+config.py已配置为使用mimo-proxy（`http://localhost:8080/v1`），直接运行即可。
+
 ## 注意事项
 
 1. 测试环境使用mimo-v2.5-pro替代Qwen模型
