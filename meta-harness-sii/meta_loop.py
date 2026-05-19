@@ -33,7 +33,7 @@ class MetaLoop:
 
         # 搜索状态
         self.current_iteration = 0
-        self.pareto_front = []  # Pareto前沿
+        self.top_candidates = []  # Top候选列表（按total_score排序）
         self.best_score = 0.0
         self.patience_counter = 0
 
@@ -44,6 +44,7 @@ class MetaLoop:
 
         # 加载搜索状态（如果存在）
         self._load_search_state()
+        self._load_top_candidates()
 
     def _signal_handler(self, signum, frame):
         """信号处理器，实现优雅中断"""
@@ -82,25 +83,25 @@ class MetaLoop:
         except Exception as e:
             self.logger.error(f"Failed to save search state: {e}")
 
-    def _load_pareto_front(self):
-        """加载Pareto前沿"""
+    def _load_top_candidates(self):
+        """加载Top候选列表"""
         pareto_file = Path(self.config.pareto_front_file)
         if pareto_file.exists():
             try:
                 with open(pareto_file, "r", encoding="utf-8") as f:
-                    self.pareto_front = json.load(f)
+                    self.top_candidates = json.load(f)
 
-                self.logger.info(f"Loaded Pareto front with {len(self.pareto_front)} candidates")
+                self.logger.info(f"Loaded top candidates with {len(self.top_candidates)} entries")
             except Exception as e:
-                self.logger.error(f"Failed to load Pareto front: {e}")
+                self.logger.error(f"Failed to load top candidates: {e}")
 
-    def _save_pareto_front(self):
-        """保存Pareto前沿"""
+    def _save_top_candidates(self):
+        """保存Top候选列表"""
         try:
             with open(self.config.pareto_front_file, "w", encoding="utf-8") as f:
-                json.dump(self.pareto_front, f, ensure_ascii=False, indent=2)
+                json.dump(self.top_candidates, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            self.logger.error(f"Failed to save Pareto front: {e}")
+            self.logger.error(f"Failed to save top candidates: {e}")
 
     def _get_eval_size(self, iteration: int) -> int:
         """获取当前迭代的评估规模"""
@@ -111,32 +112,35 @@ class MetaLoop:
         else:
             return self.config.search.eval_stage_3_size
 
-    def _update_pareto_front(self, candidate_id: str, scores: Dict[str, HarnessScores]):
-        """更新Pareto前沿"""
+    def _update_top_candidates(self, candidate_id: str, scores: Dict[str, HarnessScores]):
+        """更新Top候选列表（按total_score排序取Top-10）
+
+        注意：这不是真正的Pareto前沿（多目标支配关系），
+        而是按综合分数排序的Top-K列表。
+        """
         # 计算综合分数
         combined_scores = scores.get("combined")
         if not combined_scores:
             return
 
-        # 添加到Pareto前沿
+        # 添加到候选列表
         candidate_entry = {
             "candidate_id": candidate_id,
             "iteration": self.current_iteration,
             "accuracy": combined_scores.accuracy,
             "total_score": combined_scores.total_score,
-            "avg_tokens": combined_scores.avg_tokens,
-            "avg_reasoning_turns": combined_scores.avg_reasoning_turns,
+            "avg_steps": combined_scores.avg_steps,
             "avg_tool_calls": combined_scores.avg_tool_calls,
             "avg_elapsed_time": combined_scores.avg_elapsed_time
         }
 
-        self.pareto_front.append(candidate_entry)
+        self.top_candidates.append(candidate_entry)
 
         # 按总分排序
-        self.pareto_front.sort(key=lambda x: x["total_score"], reverse=True)
+        self.top_candidates.sort(key=lambda x: x["total_score"], reverse=True)
 
         # 只保留前10个
-        self.pareto_front = self.pareto_front[:10]
+        self.top_candidates = self.top_candidates[:10]
 
         # 更新最佳分数
         if combined_scores.total_score > self.best_score:
@@ -241,22 +245,24 @@ class MetaLoop:
 
             # 评估候选
             self.logger.info(f"Evaluating candidate {candidate_id}...")
-            scores = self.evaluator.evaluate_both_datasets(
-                candidate["code"],
-                eval_size,
-                self.config.search.parallel_threads,
-                candidate_id
-            )
+            try:
+                scores = self.evaluator.evaluate_both_datasets(
+                    candidate["code"],
+                    eval_size,
+                    self.config.search.parallel_threads,
+                    candidate_id
+                )
+            except Exception as e:
+                self.logger.error(f"Evaluation failed for {candidate_id}: {e}")
+                continue
 
             # 存储分数
             scores_dict = {}
             for dataset_name, harness_scores in scores.items():
                 scores_dict[dataset_name] = {
                     "accuracy": harness_scores.accuracy,
-                    "avg_tokens": harness_scores.avg_tokens,
-                    "avg_reasoning_turns": harness_scores.avg_reasoning_turns,
+                    "avg_steps": harness_scores.avg_steps,
                     "avg_tool_calls": harness_scores.avg_tool_calls,
-                    "avg_failed_tool_calls": harness_scores.avg_failed_tool_calls,
                     "avg_elapsed_time": harness_scores.avg_elapsed_time,
                     "total_score": harness_scores.total_score
                 }
@@ -273,20 +279,27 @@ class MetaLoop:
                             task_result.trajectory
                         )
 
-            # 更新Pareto前沿
-            self._update_pareto_front(candidate_id, scores)
+            # 更新Top候选列表
+            self._update_top_candidates(candidate_id, scores)
 
-            self.logger.info(f"Candidate {candidate_id} evaluated: "
-                           f"accuracy={scores['combined'].accuracy:.3f}, "
-                           f"total_score={scores['combined'].total_score:.3f}")
+            # 记录各数据集的单独分数
+            for dataset_name, harness_scores in scores.items():
+                if harness_scores.task_results:
+                    self.logger.info(
+                        f"  {dataset_name}: accuracy={harness_scores.accuracy:.3f}, "
+                        f"total_score={harness_scores.total_score:.3f}, "
+                        f"avg_steps={harness_scores.avg_steps:.1f}, "
+                        f"avg_tool_calls={harness_scores.avg_tool_calls:.1f}, "
+                        f"avg_elapsed_time={harness_scores.avg_elapsed_time:.2f}s"
+                    )
 
         # 保存搜索状态
         self._save_search_state()
-        self._save_pareto_front()
+        self._save_top_candidates()
 
         # 输出当前最佳
-        if self.pareto_front:
-            best = self.pareto_front[0]
+        if self.top_candidates:
+            best = self.top_candidates[0]
             self.logger.info(f"Current best: {best['candidate_id']} "
                            f"(accuracy={best['accuracy']:.3f}, "
                            f"total_score={best['total_score']:.3f})")
@@ -294,9 +307,6 @@ class MetaLoop:
     def run(self, base_harness_code: str):
         """运行Meta-Harness搜索"""
         self.logger.info("Starting Meta-Harness search...")
-
-        # 加载Pareto前沿
-        self._load_pareto_front()
 
         # 如果没有初始种群，生成一个
         if not self.filesystem.list_candidates():
@@ -308,13 +318,12 @@ class MetaLoop:
 
         # 输出最终结果
         self.logger.info("Meta-Harness search completed!")
-        if self.pareto_front:
-            best = self.pareto_front[0]
+        if self.top_candidates:
+            best = self.top_candidates[0]
             self.logger.info(f"Best candidate: {best['candidate_id']}")
             self.logger.info(f"  Accuracy: {best['accuracy']:.3f}")
             self.logger.info(f"  Total score: {best['total_score']:.3f}")
-            self.logger.info(f"  Avg tokens: {best['avg_tokens']:.1f}")
-            self.logger.info(f"  Avg reasoning turns: {best['avg_reasoning_turns']:.1f}")
+            self.logger.info(f"  Avg steps: {best['avg_steps']:.1f}")
             self.logger.info(f"  Avg tool calls: {best['avg_tool_calls']:.1f}")
             self.logger.info(f"  Avg elapsed time: {best['avg_elapsed_time']:.2f}s")
 
@@ -326,8 +335,8 @@ class MetaLoop:
 
     def get_current_best(self) -> Optional[Dict[str, Any]]:
         """获取当前最佳候选"""
-        if self.pareto_front:
-            best = self.pareto_front[0]
+        if self.top_candidates:
+            best = self.top_candidates[0]
             best_code = self.filesystem.get_harness_code(best['candidate_id'])
             return {
                 **best,

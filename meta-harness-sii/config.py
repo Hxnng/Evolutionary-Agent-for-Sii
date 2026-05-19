@@ -49,7 +49,6 @@ class SearchConfig:
 
     # 早停策略
     patience: int = 5  # 连续无改进则停止
-    min_improvement: float = 0.01  # 最小改进阈值
 
 
 @dataclass
