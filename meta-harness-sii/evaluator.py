@@ -35,7 +35,6 @@ class TaskResult:
     tool_call_count: int
     elapsed_time: float
     trajectory_path: str
-    trajectory: List[Dict] = field(default_factory=list)  # 添加trajectory属性
     summary: Dict = field(default_factory=dict)
 
 
@@ -52,38 +51,38 @@ class HarnessScores:
 
 class Evaluator:
     """评估器 - 直接使用harness-sii的evaluate.py"""
-
+    
     def __init__(self, config=None):
         self.config = config or DEFAULT_CONFIG
         self.logger = logging.getLogger("meta_harness.evaluator")
-
+    
     def evaluate_both_datasets(self, harness_code: str, size: int,
-                              threads: int = 10,
+                              threads: int = 10, 
                               candidate_id: str = "test") -> Dict[str, HarnessScores]:
         """在两个数据集上评估harness"""
         results = {}
-
+        
         # 评估SimpleVQA
         simplevqa_size = min(size, self.config.data.simplevqa_eval_size)
         results["simplevqa"] = self._evaluate_single_dataset(
-            harness_code, "simplevqa", simplevqa_size, threads,
+            harness_code, "simplevqa", simplevqa_size, threads, 
             f"{candidate_id}_simplevqa"
         )
-
+        
         # 评估2Wiki
         wiki2_size = min(size, self.config.data.wiki2_eval_size)
         results["wiki2"] = self._evaluate_single_dataset(
             harness_code, "wiki2", wiki2_size, threads,
             f"{candidate_id}_wiki2"
         )
-
+        
         # 计算综合分数
         simplevqa_scores = results["simplevqa"]
         wiki2_scores = results["wiki2"]
-
+        
         combined_accuracy = (simplevqa_scores.accuracy + wiki2_scores.accuracy) / 2
         combined_total_score = (simplevqa_scores.total_score + wiki2_scores.total_score) / 2
-
+        
         results["combined"] = HarnessScores(
             accuracy=combined_accuracy,
             avg_steps=(simplevqa_scores.avg_steps + wiki2_scores.avg_steps) / 2,
@@ -92,27 +91,9 @@ class Evaluator:
             total_score=combined_total_score,
             task_results=[]
         )
-
+        
         return results
-
-    def _get_dataset_path(self, dataset_name: str) -> Path:
-        """获取数据集路径，处理目录情况"""
-        if dataset_name == "simplevqa":
-            return Path(self.config.data.simplevqa_path)
-        elif dataset_name in ("wiki2", "2wiki"):
-            wiki2_path = Path(self.config.data.wiki2_path)
-            # 如果是目录，查找parquet文件
-            if wiki2_path.is_dir():
-                parquet_files = sorted(wiki2_path.glob("*.parquet"))
-                if parquet_files:
-                    return parquet_files[0]  # 返回第一个parquet文件
-                json_files = sorted(wiki2_path.glob("*.json")) + sorted(wiki2_path.glob("*.jsonl"))
-                if json_files:
-                    return json_files[0]
-            return wiki2_path
-        else:
-            raise ValueError(f"Unknown dataset: {dataset_name}")
-
+    
     def _evaluate_single_dataset(self, harness_code: str, dataset_name: str,
                                 size: int, threads: int,
                                 candidate_id: str) -> HarnessScores:
@@ -125,12 +106,9 @@ class Evaluator:
         model_name = self.config.api.generator_model
         llm_base_url = self.config.api.generator_base_url
 
-        # 获取数据集路径
-        dataset_path = self._get_dataset_path(dataset_name)
-
         try:
             metrics = run_dataset(
-                dataset_path=dataset_path,
+                dataset_path=Path(self.config.data.simplevqa_path if dataset_name == "simplevqa" else self.config.data.wiki2_path),
                 output_path=output_path,
                 trajectory_dir=traj_dir,
                 image_root=Path(self.config.data.simplevqa_image_root) if dataset_name == "simplevqa" else None,
@@ -141,7 +119,7 @@ class Evaluator:
                 llm_base_url=llm_base_url,
                 workers=threads,
             )
-
+            
             # 读取结果并计算分数
             task_results = []
             if output_path.exists():
@@ -149,18 +127,6 @@ class Evaluator:
                     for line in f:
                         if line.strip():
                             record = json.loads(line)
-                            # 读取轨迹文件
-                            trajectory = []
-                            traj_path = record.get("trajectory_path", "")
-                            if traj_path and Path(traj_path).exists():
-                                try:
-                                    with open(traj_path, "r", encoding="utf-8") as tf:
-                                        for traj_line in tf:
-                                            if traj_line.strip():
-                                                trajectory.append(json.loads(traj_line))
-                                except Exception as e:
-                                    self.logger.warning(f"Failed to read trajectory {traj_path}: {e}")
-
                             task_results.append(TaskResult(
                                 task_id=record.get("task_id", ""),
                                 instruction=record.get("instruction", ""),
@@ -171,16 +137,15 @@ class Evaluator:
                                 steps=record.get("steps", 0),
                                 tool_call_count=record.get("tool_call_count", 0),
                                 elapsed_time=record.get("elapsed_sec", 0),
-                                trajectory_path=traj_path,
-                                trajectory=trajectory,
+                                trajectory_path=record.get("trajectory_path", ""),
                             ))
-
+            
             # 计算分数
             accuracy = metrics.get("accuracy", 0.0)
             avg_steps = sum(r.steps for r in task_results) / len(task_results) if task_results else 0
             avg_tool_calls = sum(r.tool_call_count for r in task_results) / len(task_results) if task_results else 0
             avg_elapsed_time = sum(r.elapsed_time for r in task_results) / len(task_results) if task_results else 0
-
+            
             # 计算总分
             weights = self.config.scores
             total_score = (
@@ -191,7 +156,7 @@ class Evaluator:
                 (1.0 / (1.0 + avg_elapsed_time)) * weights.time_weight +
                 accuracy * weights.final_accuracy_weight
             )
-
+            
             return HarnessScores(
                 accuracy=accuracy,
                 avg_steps=avg_steps,
@@ -200,7 +165,7 @@ class Evaluator:
                 total_score=total_score,
                 task_results=task_results
             )
-
+            
         except Exception as e:
             self.logger.error(f"Evaluation failed for {dataset_name}: {e}")
             return HarnessScores(
