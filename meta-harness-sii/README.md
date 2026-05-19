@@ -74,19 +74,14 @@ meta-harness-sii/
 ### 生成提交文件
 
 ```bash
-# 1. 运行benchmark评估
+# 运行benchmark评估并生成提交文件（组号为11）
 python evaluate_benchmark.py \
-    --dataset /path/to/benchmark.csv \
+    --dataset /inspire/qb-ilm2/project/26summer-camp-01/public/benchmark.csv \
     --output benchmark_output.jsonl \
     --traj-dir trajectories/ \
-    --workers 4
-
-# 2. 生成提交文件（组号为11）
-python generate_submission.py \
-    --benchmark-output benchmark_output.jsonl \
-    --trajectory-dir trajectories/ \
+    --workers 4 \
     --group-number 11 \
-    --output-dir submission/
+    --submission-dir submission/
 ```
 
 ### 提交文件格式

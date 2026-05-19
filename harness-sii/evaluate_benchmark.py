@@ -253,6 +253,92 @@ def run_dataset(
     return metrics
 
 
+def generate_submission_files(
+    benchmark_output: Path,
+    trajectory_dir: Path,
+    group_number: int,
+    output_dir: Path,
+):
+    """
+    生成打榜提交文件
+
+    生成：
+    - group_{N}.json: 轨迹文件
+    - group_{N}.csv: 答案文件（包含index, problem, image, answer列）
+    - group_{N}.zip: 压缩文件
+    """
+    import csv
+    import zipfile
+
+    # 加载benchmark输出
+    records = []
+    with open(benchmark_output, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                records.append(json.loads(line))
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    group_name = f"group_{group_number}"
+
+    # 生成轨迹文件
+    json_path = output_dir / f"{group_name}.json"
+    all_trajectories = {}
+    for record in records:
+        task_id = record.get("task_id", "")
+        trajectory_path = record.get("trajectory_path", "")
+
+        if trajectory_path:
+            traj_path = Path(trajectory_path)
+            if not traj_path.is_absolute():
+                traj_path = trajectory_dir / trajectory_path
+            steps = []
+            if traj_path.exists():
+                with open(traj_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip():
+                            steps.append(json.loads(line))
+        else:
+            steps = []
+
+        all_trajectories[task_id] = {
+            "index": record.get("index"),
+            "instruction": record.get("instruction", ""),
+            "answer": record.get("answer", ""),
+            "pred": record.get("pred", ""),
+            "steps": steps,
+        }
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(all_trajectories, f, ensure_ascii=False, indent=2)
+    print(f"Generated {json_path} with {len(all_trajectories)} trajectories")
+
+    # 生成答案文件
+    csv_path = output_dir / f"{group_name}.csv"
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["index", "problem", "image", "answer"])
+        for record in records:
+            writer.writerow([
+                record.get("index", ""),
+                record.get("problem", ""),
+                record.get("image", ""),
+                record.get("pred", ""),
+            ])
+    print(f"Generated {csv_path} with {len(records)} answers")
+
+    # 生成压缩文件
+    zip_path = output_dir / f"{group_name}.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(json_path, json_path.name)
+        zf.write(csv_path, csv_path.name)
+    print(f"Generated {zip_path}")
+
+    print(f"\nSubmission files generated in {output_dir}/")
+    print(f"  - {group_name}.json (trajectories)")
+    print(f"  - {group_name}.csv (answers)")
+    print(f"  - {group_name}.zip (submission)")
+
+
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run harness evaluation on benchmark.csv.")
     p.add_argument("--dataset", required=True, type=Path)
@@ -271,6 +357,18 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="Parallel task workers. Start with 4-8 for large benchmark.csv runs.",
+    )
+    p.add_argument(
+        "--group-number",
+        type=int,
+        default=None,
+        help="Group number for generating submission files (e.g., 11).",
+    )
+    p.add_argument(
+        "--submission-dir",
+        type=Path,
+        default=Path("submission"),
+        help="Output directory for submission files.",
     )
     return p.parse_args()
 
@@ -292,3 +390,15 @@ if __name__ == "__main__":
         workers=args.workers,
     )
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
+
+    # 如果指定了组号，生成打榜提交文件
+    if args.group_number is not None:
+        print("\n" + "="*50)
+        print("Generating submission files...")
+        print("="*50)
+        generate_submission_files(
+            benchmark_output=args.output,
+            trajectory_dir=args.traj_dir,
+            group_number=args.group_number,
+            output_dir=args.submission_dir,
+        )
