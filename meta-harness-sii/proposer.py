@@ -370,7 +370,7 @@ class Proposer:
                     {"role": "system", "content": "你是一个代码变体生成专家，擅长基于现有代码创建多样化的变体。"},
                     {"role": "user", "content": prompt}
                 ],
-                max_completion_tokens=8192,
+                max_completion_tokens=16384,
                 temperature=0.9,
                 top_p=0.95
             )
