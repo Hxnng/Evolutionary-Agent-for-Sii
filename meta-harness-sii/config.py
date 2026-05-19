@@ -14,7 +14,7 @@ class APIConfig:
     """API配置"""
     # Proposer配置（mimo V2.5 pro - 通过mimo-proxy代理）
     proposer_api_key: str = "any"  # mimo-proxy不需要认证
-    proposer_base_url: str = "http://localhost:8089/v1"  # mimo-proxy地址
+    proposer_base_url: str = "https://nat2-notebook-inspire.sii.edu.cn/ws-7c23bd1d-9bae-4238-803a-737a35480e18/project-39fbffc7-dcca-4fb4-b43a-2f69f72f7e52/user-3b6eff24-d502-459c-a481-948ee6c85d8e/vscode/5b68e9cd-12fb-4c24-9be6-617b7217c7cd/89ef62a3-36c1-490e-b875-dbae9ee98de2/proxy/8081/"  # mimo-proxy地址
     proposer_model: str = "mimo-v2.5-pro"
 
     # Generator配置
@@ -45,7 +45,7 @@ class SearchConfig:
     # 精调期：剩余迭代
 
     # 并行评估
-    parallel_threads: int = 10  # 并行线程数
+    parallel_threads: int = 1  # 并行线程数
 
     # 早停策略
     patience: int = 5  # 连续无改进则停止

@@ -26,7 +26,7 @@ source .venv/bin/activate
 pip install -q -r requirements.txt
 
 HOST="${MIMO_PROXY_HOST:-127.0.0.1}"
-PORT="${MIMO_PROXY_PORT:-8089}"
+PORT="${MIMO_PROXY_PORT:-8081}"
 
 echo "[run] uvicorn app.main:app --host $HOST --port $PORT"
 exec uvicorn app.main:app --host "$HOST" --port "$PORT" --no-access-log
