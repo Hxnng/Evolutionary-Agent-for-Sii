@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     """Environment-driven settings."""
 
     host: str = "0.0.0.0"
-    port: int = 8080
+    port: int = 8088
 
     # mimo API配置
     mimo_api_key: str = "tp-cjeqnl3h4ekv8c1oot1s6pzp0x20yq886hs5d6x6e94f83qb"
