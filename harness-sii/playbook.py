@@ -9,34 +9,88 @@ of the prompt.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import unquote, urlparse
 
 
-GENERAL_PLAYBOOK = """## 进化版 Harness Playbook
-你正在使用一个会沉淀经验的 ReAct harness。每轮先判断缺口，再决定是否调用工具。
-- 优先把问题拆成：识别实体 -> 找关系/属性 -> 核验证据 -> 输出答案。
-- 搜索前写出高信息量关键词；中文题优先搜索中文实体，英文多跳题保留原文实体名。
-- search_text 已返回足够证据时直接作答；只有需要页面全文、交互或批量 URL 时才用浏览器。
-- 同一查询或同一 URL 两次无增益后必须换查询、换证据源，或基于已有证据停止。
-- 临近最大轮数时不要继续探索，归纳当前最可信证据并输出 <answer>答案</answer>。
-- 最终答案只包含答案本体，不要解释、单位换算说明或来源文本。"""
+BASE_POLICY = """## Context Policy
+- Use the smallest sufficient context: question + routed skill + compact data points.
+- Treat atomic_fact/evidence triples as candidates or evidence, never as a gold answer field.
+- If compact evidence answers the question, stop and output only <answer>...</answer>.
+- If evidence is missing, make one high-information query from entity + requested attribute.
+- Avoid repeated search/browser calls; after two low-signal results, answer from best evidence."""
 
 
-SIMPLEVQA_PLAYBOOK = """## SimpleVQA 策略
-- 图像题通常先要确定图中实体，再回答实体的属性、类别、所在地、作者、用途等。
-- 若输入提供“图像识别线索/atomic_fact”，把它当作视觉识别结果候选，不是最终答案。
-- 若输入提供 source URL，优先搜索或浏览该来源标题中的实体；source 可作为核验入口，但不能照抄无关页面导航。
-- 对中医、文物、建筑、植物、动漫角色等长尾实体，查询格式优先用：`实体名 + 题目询问的属性`。
-- 如果题目要求名称，直接输出名称；如果题目要求所属经脉/国家首都/作者等，必须回答被问属性而不是图中实体。"""
+@dataclass(frozen=True)
+class Skill:
+    skill_id: str
+    triggers: tuple[str, ...]
+    body: str
 
 
-TWOWIKI_PLAYBOOK = """## 2Wiki 多跳策略
-- 只基于 Candidate context 和 Focus documents 推理，搜索/浏览只用于核验，不要替代上下文。
-- 先定位问题里的起点实体和关系，再在第二个 supporting title 中寻找最终关系。
-- 对 compositional 问题，按 A -> B -> C 两跳写草稿，但最终只输出 C。
-- 对 comparison 问题，分别抽取两个实体的数值/日期/属性，再比较后输出题目要求的实体或属性。
-- Focus documents 比干扰文档优先；若 focus 中已经包含答案，不要调用工具。"""
+SKILLBOOK: tuple[Skill, ...] = (
+    Skill(
+        "simple.direct-entity",
+        ("叫什么", "名称", "是谁", "which", "what is the name", "actor inside", "person inside"),
+        "For direct recognition/name questions, atomic_fact is usually the visual entity. Use it directly only when the question is asking for the entity itself, not its author/location/attribute.",
+    ),
+    Skill(
+        "simple.attribute-lookup",
+        ("作者", "设计", "提出", "委托", "死于", "所属", "属于", "类型", "displayed", "belong", "type"),
+        "For attribute questions, do not answer atomic_fact. Query or read source_digest for `atomic_fact + requested attribute`; output the attribute value only.",
+    ),
+    Skill(
+        "simple.location-origin",
+        ("位于", "所在", "城市", "国家", "首都", "来源于", "where", "country", "city", "displayed"),
+        "For location/origin questions, map visual entity -> place/country/city. If source_digest states the relation, use it; otherwise search `entity + location/origin/country`.",
+    ),
+    Skill(
+        "simple.art-culture",
+        ("书画", "文物", "artwork", "painting", "calligraphy", "cultural", "displayed"),
+        "For art/cultural relics, common targets are name, dynasty/period, creator, collection/display place, type. Preserve exact proper nouns from evidence.",
+    ),
+    Skill(
+        "simple.landmark-scene",
+        ("建筑", "景点", "landmark", "structure", "place", "景观", "地图"),
+        "For landmarks/scenes/maps, atomic_fact is often a partial visual anchor. Answer the requested granularity: structure name, city, country, or place type.",
+    ),
+    Skill(
+        "simple.text-ocr",
+        ("文本", "文字", "书籍", "poster", "movie poster", "OCR", "这本书", "海报"),
+        "For text/poster/book images, first identify the title from atomic_fact/source_digest, then answer the requested metadata such as author, country, genre, or disease.",
+    ),
+    Skill(
+        "simple.visual-comparison",
+        ("左", "右", "两侧", "brighter", "darker", "larger", "颜色", "数量", "位置"),
+        "For comparison/position/count questions, prefer the visual relation in atomic_fact and avoid web search unless the question asks external knowledge.",
+    ),
+    Skill(
+        "simple.medicine-science",
+        ("穴位", "经脉", "中药", "疾病", "化学", "公式", "science", "medical"),
+        "For medicine/science, source_digest often contains the exact property. Extract concise terms such as meridian, herb name, disease, formula, or category.",
+    ),
+    Skill(
+        "2wiki.chain",
+        ("compositional", "inference", "father", "mother", "director", "spouse", "award received"),
+        "For chain questions, follow triples left-to-right. The final object of the last relation is usually the answer.",
+    ),
+    Skill(
+        "2wiki.date-compare",
+        ("date of birth", "date of death", "publication date", "first", "earlier", "later", "younger", "older"),
+        "For date comparisons, normalize dates before comparing. Bridge questions ask for the original entity whose linked person/date wins.",
+    ),
+    Skill(
+        "2wiki.country-alias",
+        ("country", "citizenship", "nationality", "same country", "same nationality"),
+        "For country/nationality, canonicalize demonyms: American/USA/United States, British/UK, German/Germany, Canadian/Canada, Indian/India.",
+    ),
+    Skill(
+        "2wiki.lifespan",
+        ("lived longer", "date of birth", "date of death"),
+        "For lived-longer questions, compute death date minus birth date for each entity and return the entity with the longer lifespan.",
+    ),
+)
 
 
 def infer_task_family(instruction: str) -> str:
@@ -51,12 +105,28 @@ def infer_task_family(instruction: str) -> str:
 
 def playbook_for_instruction(instruction: str) -> str:
     family = infer_task_family(instruction)
-    blocks = [GENERAL_PLAYBOOK]
-    if family == "simplevqa":
-        blocks.append(SIMPLEVQA_PLAYBOOK)
-    elif family == "2wiki":
-        blocks.append(TWOWIKI_PLAYBOOK)
-    return "\n\n".join(blocks)
+    skills = retrieve_skills(instruction, family=family, k=5)
+    if not skills:
+        return BASE_POLICY
+    lines = [BASE_POLICY, "## Retrieved Skills"]
+    for skill in skills:
+        lines.append(f"- {skill.skill_id}: {skill.body}")
+    return "\n".join(lines)
+
+
+def retrieve_skills(text: str, *, family: str = "general", k: int = 5) -> list[Skill]:
+    lowered = (text or "").lower()
+    scored: list[tuple[int, int, Skill]] = []
+    for pos, skill in enumerate(SKILLBOOK):
+        if family == "2wiki" and not skill.skill_id.startswith("2wiki."):
+            continue
+        if family == "simplevqa" and not skill.skill_id.startswith("simple."):
+            continue
+        score = sum(1 for trigger in skill.triggers if trigger.lower() in lowered)
+        if score:
+            scored.append((score, -pos, skill))
+    scored.sort(reverse=True)
+    return [skill for _, _, skill in scored[:k]]
 
 
 def compact_text(text: Any) -> str:
@@ -90,7 +160,22 @@ def simplevqa_hint_block(row: dict[str, Any]) -> str:
     atomic_question = compact_text(row.get("atomic_question"))
     source = _source_digest(str(row.get("source") or ""))
     category = row.get("vqa_category") if isinstance(row.get("vqa_category"), dict) else {}
+    routing_text = " ".join(
+        compact_text(x)
+        for x in (
+            row.get("question"),
+            atomic_fact,
+            atomic_question,
+            category.get("task_category"),
+            category.get("subject_category"),
+            category.get("entity_class"),
+            row.get("original_category"),
+        )
+    )
+    skill_ids = [skill.skill_id for skill in retrieve_skills(routing_text, family="simplevqa", k=3)]
 
+    if skill_ids:
+        lines.append("skill_route: " + ", ".join(skill_ids))
     if atomic_fact:
         lines.append(f"图像识别线索 atomic_fact: {atomic_fact}")
     if atomic_question:

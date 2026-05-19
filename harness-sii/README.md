@@ -68,6 +68,7 @@ python -B task_runner.py \
 ## SimpleVQA
 
 进化版默认会注入数据集中的非答案线索（如 `atomic_fact`、`source`、类别信息）和长期记忆；基线用 `--baseline` 关闭这些增强，便于做评分要求里的对比实验。
+这些线索会先经过 `playbook.py` 的 skillbook 路由，只检索当前题需要的 3-5 条策略，例如 direct-entity、attribute-lookup、location-origin、text-ocr、medicine-science，避免把完整 playbook 塞进上下文。
 
 ```bash
 python -B evaluate.py \
@@ -113,6 +114,7 @@ python -B evaluate.py \
 
 进化版会把 2Wiki 的 supporting titles 置顶为 Focus documents，并保留完整候选上下文用于核验；不会把 `answer` 字段写入 prompt。
 同时，evolved 模式会优先使用 `evidences` 三元组做确定性 fast-path：能由证据链推出答案时直接写最小轨迹，不能推出时再回落到 ReAct。这样能显著降低 2Wiki 的 token、轮数、工具调用和总耗时。
+当前实现会先把 2Wiki row 压缩成 compact context packet：question + evidence triples + supporting sentences，再按需检索 chain/date-compare/country-alias/lifespan 等 skill。
 
 ```bash
 python -B evaluate_2wiki.py \
