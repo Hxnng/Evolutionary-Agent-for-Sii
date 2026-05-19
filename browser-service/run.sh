@@ -83,12 +83,16 @@ if [ -z "${PLAYWRIGHT_DOWNLOAD_HOST:-}" ] && [ "$IN_CONTAINER" = "1" ]; then
 fi
 
 # 检测 Chromium 是否已安装
-if $PY -c "from playwright.sync_api import sync_playwright; \
-import sys; \
-p = sync_playwright().start(); \
-sys.exit(0 if p.chromium.executable_path else 1); \
-" 2>/dev/null; then
-    log "Playwright Chromium already installed."
+CHROMIUM_PATH="$($PY - <<'PY'
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    print(p.chromium.executable_path)
+PY
+)"
+
+if [ -n "$CHROMIUM_PATH" ] && [ -x "$CHROMIUM_PATH" ]; then
+    log "Playwright Chromium already installed: $CHROMIUM_PATH"
 else
     log "Installing Playwright Chromium (~150MB) ..."
     $PY -m playwright install chromium
