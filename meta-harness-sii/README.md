@@ -69,8 +69,46 @@ meta-harness-sii/
 - 工具调用优化
 - 推理时间优化
 
+## 打榜提交
+
+### 生成提交文件
+
+```bash
+# 1. 运行benchmark评估
+python evaluate_benchmark.py \
+    --dataset /path/to/benchmark.csv \
+    --output benchmark_output.jsonl \
+    --traj-dir trajectories/ \
+    --workers 4
+
+# 2. 生成提交文件（组号为11）
+python generate_submission.py \
+    --benchmark-output benchmark_output.jsonl \
+    --trajectory-dir trajectories/ \
+    --group-number 11 \
+    --output-dir submission/
+```
+
+### 提交文件格式
+
+生成的文件在 `submission/` 目录：
+- `group_11.json` - 轨迹文件（包含每个问题的完整推理轨迹）
+- `group_11.csv` - 答案文件（包含index, problem, image, answer列）
+- `group_11.zip` - 压缩文件（提交此文件）
+
+### CSV格式说明
+
+`group_11.csv` 格式：
+```csv
+index,problem,image,answer
+0,问题内容,图片路径,Agent的答案
+1,问题内容,图片路径,Agent的答案
+...
+```
+
 ## 注意事项
 
 1. 测试环境使用mimo-v2.5-pro替代Qwen模型
 2. 支持断点续跑，可随时中断并恢复
 3. 分阶段评估：50→100→200条
+4. 打榜数据路径：`/inspire/qb-ilm2/project/26summer-camp-01/public/benchmark.csv`
