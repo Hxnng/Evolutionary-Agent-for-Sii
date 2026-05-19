@@ -19,6 +19,7 @@ import base64
 import logging
 import os
 import threading
+from pathlib import Path
 from typing import Any, Optional
 
 import requests
@@ -27,10 +28,32 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# .env loading (same pattern as search_tool.py)
+# ---------------------------------------------------------------------------
+def _load_env_file(path: Path, override: bool = True) -> None:
+    if not path.exists():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and (override or key not in os.environ):
+            os.environ[key] = value
+
+
+_here = Path(__file__).resolve()
+_load_env_file(_here.parents[1] / ".env", override=False)
+_load_env_file(_here / ".env", override=True)
+
+
+# ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 # NOTE: same env var name as before so existing deployments keep working.
-SANDBOX_BASE_URL = os.getenv("SANDBOX_BASE_URL", "http://127.0.0.1:8080")
+SANDBOX_BASE_URL = os.getenv("SANDBOX_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
 SANDBOX_API_TOKEN = os.getenv("SANDBOX_API_TOKEN", "") or os.getenv(
     "BROWSER_API_TOKEN", ""
 )
@@ -321,6 +344,14 @@ def _create_client(url: str) -> BrowserSandboxClient:
     return cli
 
 
+def _browser_mode() -> str:
+    """Return 'proxy' if SANDBOX_BASE_URL points to a remote service, else 'local'."""
+    url = SANDBOX_BASE_URL.lower()
+    if "127.0.0.1" in url or "localhost" in url:
+        return "local"
+    return "proxy"
+
+
 def get_sandbox(base_url: Optional[str] = None) -> BrowserSandboxClient:
     """Return a lazily-initialised browser-service client (singleton).
 
@@ -332,6 +363,7 @@ def get_sandbox(base_url: Optional[str] = None) -> BrowserSandboxClient:
     with _singleton_lock:
         _client_url = url
         if _client is None:
+            logger.info("[mode] %s via %s", _browser_mode(), url)
             _client = _create_client(url)
         return _client
 

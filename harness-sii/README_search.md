@@ -231,3 +231,69 @@ python -m tools.search_tool text "foo" --no-fetch
 4. **图片上传**：本地图片不再上传到 0x0.st 直接出公网，而是先 `multipart/form-data` 上传到 CPU 端的 `/upload_image`，由 CPU 代为转储。这样 GPU 上不需要任何外网 DNS。
 5. **隧道运维**：建议用 `autossh` + systemd（或 `tmux`）守住隧道；隧道断了 `search_tool` 会立即返回连接错误，但不会 crash 整个 task_runner。
 6. **token 预算**：默认 `top_k=5` × `max_chars=5000` ≈ 25K 字符。配合现在 `traj.to_messages()` 每轮带完整历史，几轮就会逼近 128K，与 `task_runner.py` 的上下文压缩问题一并处理时记得把 search 结果纳入截断目标。
+
+---
+
+## 八、浏览器代理（browser-service 部署在 CPU 端）
+
+与搜索引擎同理，GPU 端无外网时，需要把 `browser-service`（Playwright + Chromium）部署在有外网的 CPU 端，GPU 通过隧道连接。
+
+### 架构
+
+```
+GPU (无外网)                              CPU (有外网)
+┌───────────────────────┐                ┌─────────────────────────┐
+│ browser_tool.py       │                │ browser-service (FastAPI)│
+│   └► sandbox_client.py│── HTTP ───────►│   └► Playwright Chromium│
+│                       │   via tunnel   │       └► 访问网站       │
+│ SANDBOX_BASE_URL=     │                │                         │
+│   http://127.0.0.1:8080               │ 监听 0.0.0.0:8080       │
+└───────────────────────┘                └─────────────────────────┘
+```
+
+### CPU 端：启动 browser-service
+
+```bash
+cd browser-service
+
+# 可选：设鉴权 token
+export API_TOKEN="$(openssl rand -hex 16)"
+
+# 启动（自动装依赖 + Chromium）
+./run.sh
+# 默认监听 0.0.0.0:8080
+```
+
+健康检查：
+```bash
+curl http://127.0.0.1:8080/health
+```
+
+### GPU 端：配置连接
+
+在 `harness-sii/.env` 中设置：
+
+```bash
+# SSH 隧道模式（本地端口转发）
+SANDBOX_BASE_URL=http://127.0.0.1:8080
+
+# VS Code 转发模式
+SANDBOX_BASE_URL=https://xxx-8080.tunnel.vscode.dev
+
+# 如果 CPU 端设了 API_TOKEN
+SANDBOX_API_TOKEN=与CPU端一致的token
+```
+
+### 隧道打通
+
+与搜索代理完全相同的方案（A/B/C/D），把端口从 8090 换成 8080 即可。
+
+### 环境变量速查
+
+GPU 端：
+
+| 变量 | 必需？ | 说明 |
+| --- | --- | --- |
+| `SANDBOX_BASE_URL` | 推荐设置 | browser-service 地址。默认 `http://127.0.0.1:8080`（本地）；改为隧道地址即走代理 |
+| `SANDBOX_API_TOKEN` | 看 CPU 端是否开鉴权 | 与 CPU 端 `API_TOKEN` 一致 |
+| `SANDBOX_HTTP_TIMEOUT` | 可选 | HTTP 超时秒数，默认 120 |
