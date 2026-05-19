@@ -1,0 +1,237 @@
+"""
+Batch evaluator for benchmark.csv.
+
+Expected CSV columns:
+    problem,image,answer
+
+The image column can be empty, an http(s) URL, a data:image/... base64 URL,
+a raw base64 image string, or a local image path. Raw base64 images are wrapped
+as data URLs with a MIME type inferred from their magic bytes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import csv
+import json
+import re
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+from task_runner import extract_answer, normalize_answer, run_task
+
+
+def _read_csv_records(path: Path) -> list[dict[str, Any]]:
+    csv.field_size_limit(sys.maxsize)
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = [dict(row) for row in reader]
+    missing = {"problem", "image", "answer"} - set(reader.fieldnames or [])
+    if missing:
+        raise ValueError(f"CSV is missing required columns: {sorted(missing)}")
+    return rows
+
+
+def _looks_like_base64(text: str) -> bool:
+    if not text or len(text) < 32:
+        return False
+    if re.search(r"[^A-Za-z0-9+/=\s-]", text):
+        return False
+    try:
+        base64.b64decode(text.strip(), validate=True)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _mime_from_bytes(data: bytes) -> str:
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    return "image/jpeg"
+
+
+def _data_url_from_bytes(data: bytes) -> str:
+    mime = _mime_from_bytes(data)
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _image_to_url(image: str, image_root: Path | None) -> tuple[str, str]:
+    """Return (image_url_for_model, safe_image_for_output)."""
+    image = (image or "").strip()
+    if not image:
+        return "", ""
+    if image.startswith(("http://", "https://", "data:image/")):
+        safe = image if len(image) < 500 else f"<image_url:{len(image)} chars>"
+        return image, safe
+
+    compact = re.sub(r"\s+", "", image)
+    if _looks_like_base64(compact):
+        data = base64.b64decode(compact, validate=True)
+        return f"data:{_mime_from_bytes(data)};base64,{compact}", f"<base64_image:{len(compact)} chars>"
+
+    path = Path(image)
+    if not path.is_absolute() and image_root is not None:
+        path = image_root / image
+    if path.exists():
+        return _data_url_from_bytes(path.read_bytes()), str(image)
+
+    return "", image
+
+
+def _build_instruction(problem: str, has_image: bool) -> str:
+    problem = problem.strip()
+    if not problem:
+        raise ValueError("CSV row has an empty problem field")
+    if has_image:
+        return (
+            "Please answer the benchmark problem. Use the attached image if it is relevant. "
+            "You may call search and browser tools when needed. "
+            "Return the final answer only inside <answer>...</answer>.\n\n"
+            f"Problem: {problem}"
+        )
+    return (
+        "Please answer the benchmark problem. You may call search and browser tools when needed. "
+        "Return the final answer only inside <answer>...</answer>.\n\n"
+        f"Problem: {problem}"
+    )
+
+
+def run_dataset(
+    dataset_path: Path,
+    output_path: Path,
+    trajectory_dir: Path,
+    *,
+    image_root: Path | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+    split_name: str = "benchmark",
+    evolved: bool = True,
+    model_name: str | None = None,
+    llm_base_url: str | None = None,
+    metrics_output: Path | None = None,
+) -> dict[str, Any]:
+    rows = _read_csv_records(dataset_path)
+    if offset:
+        rows = rows[offset:]
+    if limit is not None:
+        rows = rows[:limit]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    trajectory_dir.mkdir(parents=True, exist_ok=True)
+
+    total = 0
+    answerable = 0
+    correct = 0
+    started = time.time()
+
+    with output_path.open("w", encoding="utf-8") as out:
+        for local_i, row in enumerate(rows):
+            source_index = offset + local_i
+            image_url, safe_image = _image_to_url(row.get("image", ""), image_root)
+            instruction = _build_instruction(str(row.get("problem") or ""), bool(image_url))
+            answer = str(row.get("answer") or "")
+            task_id = f"{split_name}_{source_index}"
+            task_started = time.time()
+            result = run_task(
+                {
+                    "id": task_id,
+                    "instruction": instruction,
+                    "answer": answer,
+                    "image_url": image_url,
+                    "evolved": evolved,
+                },
+                trajectory_dir=str(trajectory_dir),
+                model_name=model_name or None,
+                llm_base_url=llm_base_url or None,
+            )
+            elapsed = time.time() - task_started
+            pred = extract_answer(result.get("answer", ""))
+            success = bool(answer) and normalize_answer(pred) == normalize_answer(answer)
+
+            record = {
+                "index": source_index,
+                "task_id": task_id,
+                "dataset": "benchmark",
+                "problem": row.get("problem", ""),
+                "instruction": instruction,
+                "image": safe_image,
+                "has_image": bool(image_url),
+                "answer": answer,
+                "pred": pred,
+                "success": success if answer else None,
+                "trajectory_path": result.get("trajectory_path", ""),
+                "elapsed_sec": elapsed,
+                "steps": result.get("steps"),
+                "tool_call_count": result.get("summary", {}).get("tool_call_count"),
+            }
+            out.write(json.dumps(record, ensure_ascii=False) + "\n")
+            out.flush()
+
+            total += 1
+            if answer:
+                answerable += 1
+                correct += int(success)
+
+    elapsed = time.time() - started
+    metrics = {
+        "dataset": str(dataset_path),
+        "output": str(output_path),
+        "trajectory_dir": str(trajectory_dir),
+        "split_name": split_name,
+        "mode": "evolved" if evolved else "baseline",
+        "total": total,
+        "answerable": answerable,
+        "correct": correct,
+        "accuracy": correct / answerable if answerable else 0.0,
+        "elapsed_sec": elapsed,
+    }
+    if metrics_output is not None:
+        metrics_output.parent.mkdir(parents=True, exist_ok=True)
+        metrics_output.write_text(
+            json.dumps(metrics, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    return metrics
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Run harness evaluation on benchmark.csv.")
+    p.add_argument("--dataset", required=True, type=Path)
+    p.add_argument("--output", required=True, type=Path)
+    p.add_argument("--traj-dir", required=True, type=Path)
+    p.add_argument("--image-root", type=Path, default=None)
+    p.add_argument("--limit", type=int, default=None)
+    p.add_argument("--offset", type=int, default=0)
+    p.add_argument("--split-name", default="benchmark")
+    p.add_argument("--baseline", action="store_true", help="Disable memory/reflection prompt injection.")
+    p.add_argument("--model", default=None)
+    p.add_argument("--llm-url", default=None)
+    p.add_argument("--metrics-output", type=Path, default=None)
+    return p.parse_args()
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+    metrics = run_dataset(
+        args.dataset,
+        args.output,
+        args.traj_dir,
+        image_root=args.image_root,
+        limit=args.limit,
+        offset=args.offset,
+        split_name=args.split_name,
+        evolved=not args.baseline,
+        model_name=args.model,
+        llm_base_url=args.llm_url,
+        metrics_output=args.metrics_output,
+    )
+    print(json.dumps(metrics, ensure_ascii=False, indent=2))
