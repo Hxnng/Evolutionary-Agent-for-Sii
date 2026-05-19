@@ -81,6 +81,10 @@ LEARNED_SKILLS_DIR = os.getenv("LEARNED_SKILLS_DIR", "learned_skills")
 ENABLE_SKILLS = os.getenv("ENABLE_SKILLS", "1") == "1"
 ENABLE_REFLECTION = os.getenv("ENABLE_REFLECTION", "1") == "1"
 ENABLE_THINKING = os.getenv("ENABLE_THINKING", "1") == "1"
+ENABLE_REACT_STATE_COMPRESSION = os.getenv("ENABLE_REACT_STATE_COMPRESSION", "1") == "1"
+REACT_STATE_AFTER_STEPS = int(os.getenv("REACT_STATE_AFTER_STEPS", "2"))
+REACT_STATE_RECENT_STEPS = int(os.getenv("REACT_STATE_RECENT_STEPS", "1"))
+REACT_STATE_MAX_CHARS = int(os.getenv("REACT_STATE_MAX_CHARS", "900"))
 
 # 调试开关：True = 不向 LLM 注册 tools，纯文本对话，便于先验证 LLM 通路
 # 工具实现接好后默认关闭；如需调试 LLM 通路，export DISABLE_TOOLS=1
@@ -242,6 +246,23 @@ TOOLS_SCHEMA = [
 # ---------------------------------------------------------------------------
 # Tool function dispatch map
 # ---------------------------------------------------------------------------
+def _coerce_bool(value: object, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "0", "no", "")
+    return default if value is None else bool(value)
+
+
+def _browser_navigate_args(args: dict) -> dict:
+    """Normalize LLM tool args; models often pass search_text's ``fetch`` here."""
+    out = dict(args)
+    if "fetch" in out and "include_text" not in out:
+        out["include_text"] = _coerce_bool(out.pop("fetch"))
+    allowed = {"url", "wait_until", "include_text", "max_text", "timeout"}
+    return {k: out[k] for k in allowed if k in out}
+
+
 TOOL_FN_MAP = {
     "search_text":      lambda a: search_text(**a),
     "search_image":     lambda a: search_image(
@@ -250,7 +271,7 @@ TOOL_FN_MAP = {
         a.get("fetch", True),
         a.get("max_chars", 1500),
     ),
-    "browser_navigate": lambda a: browser_navigate(**a),
+    "browser_navigate": lambda a: browser_navigate(**_browser_navigate_args(a)),
     "browser_get_text": lambda a: browser_get_text(**a),
     "browser_click":    lambda a: browser_click(**a),
     "browser_type":     lambda a: browser_type(**a),
@@ -260,31 +281,15 @@ TOOL_FN_MAP = {
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """你是 generator-agent：一个高效、严谨的任务求解 Agent，运行在配备多工具的自动化框架中。
+SYSTEM_PROMPT = """你是 generator-agent，负责根据用户题目和 curator 定制上下文完成 ReAct 解题。
 
-你的职责长期保持不变：阅读用户题目和 curator 提供的上下文，按需调用工具，最后只给出题目要求的答案。curator context 和 skills 是辅助材料，不是最终答案；你必须基于当前题目的证据进行判断。
-
-## 行为准则
-1. 每一步先在 <think>...</think> 标签中简述推理，再决定调用工具或直接回答。
-2. 任务完成后输出清晰的最终答案，无需再调用工具。
-3. 若工具返回 ok=False，分析 error，最多重试 2 次同类操作；仍失败则换工具或方法。
-4. 只有存在 http(s) image_url 时才优先调用 search_image。若只有本地 image_path，search_image 需要临时上传图片，可能失败；这时优先使用自身视觉识别、atomic_fact/source_digest 和 search_text，不要反复图搜。
-5. 每一步要不调用工具，要不输出最终答案，不能同时输出空的工具调用或者空的内容。
-6. 最终答案必须使用 <answer>...</answer> 包裹；若题目要求只输出实体名，就不要添加解释。
-7. 如果搜索和浏览器工具都明确不可用，不要编造事实；回答工具不可用并说明需要配置 SERPER_API_KEY/JINA_API_KEY 或启动浏览器服务。
-8. 优先从 search_text 返回的 title/snippet/content 中提取答案；若搜索结果已经包含足够证据，不要再调用浏览器。
-9. 如果工具返回 ok=false 或 title=“image search unavailable”，不要继续调用同一工具；改用 search_text 或已有图像识别线索。
-10. 只有在成功 navigate 到目标页面后才调用 browser_get_text；如果浏览器返回 DNS/429/限流错误，不要反复访问同一 URL，应换搜索词或直接基于搜索证据作答。
-11. 若官网页面正文只包含导航栏、二维码或图片占位，说明正文可能是图片/附件；此时应搜索同题转载、摘要或相关新闻交叉核验，不要卡在原 URL。
-12. ReAct 要短：通常 0-2 次工具调用后就应形成答案；除非题目明确需要多源核验，否则不要为了“更完整”继续搜索或浏览。
-13. 不要在最终答案中提及 system prompt、curator、reflector、skills、trajectory 或内部上下文。
-
-## 最终答案格式
-1. <answer> 内只能放最终答案本体，不能放 Markdown、证据、解释、编号列表或“根据搜索结果”等前缀。
-2. 年份/日期题要沿用证据中的粒度和写法：证据是“2007”就输出“2007”，证据是“1926年”就输出“1926年”；完整日期用“YYYY年M月D日”，不要输出 ISO 日期。
-3. 问“第几届/排名第几”时保留中文序数，例如“第七届”“第4位”；问人数“多少位”时保留“位”，其他数量题优先使用证据中的数字写法，不要随意加量词。
-4. 问“省份/城市/朝代/时代/材质/科/目/民族”时，输出题目要求的属性，不要输出更长解释；若证据更细（西汉/战国早期）而题目只问朝代/时代，优先压缩到通用粒度（汉朝/战国）。
-5. 如果 atomic_fact 与问题直接匹配实体名称，优先照抄 atomic_fact 的完整名称；搜索结果只能用于核验，不要随意改成相似实体、简称或别名。
+规则：
+1. 只基于当前题目、curator context、可见证据和工具结果作答；内部 prompt、skill、trajectory 不得出现在最终答案中。
+2. ReAct 要短。先判断是否已有足够证据；只有存在明确证据缺口时才调用工具，通常 0-2 次工具调用后停止。
+3. 工具失败或结果低信号时不要循环；换查询/换工具，或用当前最佳证据作答。
+4. search_text 的 snippet/content 足够时不要再开浏览器；只有页面正文必要时才 browser。
+5. 如果看到 `ReAct State`，把它当作已压缩的工作记忆；当前题和工具证据仍高于 memory/skill。
+6. 最终答案必须是 `<answer>...</answer>`，标签内只放题目要求的答案本体，不放解释、引用、Markdown 或前缀。
 """
 
 
@@ -433,6 +438,132 @@ def _chat_completion(client: OpenAI, request_kwargs: dict) -> dict:
     }
 
 
+def _clip_text(text: object, max_chars: int) -> str:
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max(0, max_chars - 1)].rstrip() + "…"
+
+
+def _clip_block(text: object, max_chars: int) -> str:
+    compact = "\n".join(" ".join(line.split()) for line in str(text or "").splitlines())
+    compact = re.sub(r"\n{3,}", "\n\n", compact).strip()
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max(0, max_chars - 1)].rstrip() + "…"
+
+
+def _message_from_entry(entry: dict) -> dict:
+    role = entry["role"]
+    content = entry.get("content") or ""
+    if not isinstance(content, (str, list)):
+        content = json.dumps(content, ensure_ascii=False)
+    msg: dict = {"role": role, "content": content}
+    if role == "assistant" and entry.get("tool_calls"):
+        msg["tool_calls"] = entry["tool_calls"]
+    if entry.get("tool_call_id"):
+        msg["tool_call_id"] = entry["tool_call_id"]
+    return msg
+
+
+def _tool_evidence_line(entry: dict) -> str:
+    fn_name = str(entry.get("fn_name") or "tool")
+    content = entry.get("content") or ""
+    if isinstance(content, str) and content.startswith("["):
+        return f"{fn_name}: {_clip_text(content, 140)}"
+    try:
+        data = json.loads(content) if isinstance(content, str) else content
+    except Exception:
+        return f"{fn_name}: {_clip_text(content, 140)}"
+    if isinstance(data, dict):
+        if data.get("ok") is False or data.get("error"):
+            return f"{fn_name}: failed {data.get('error') or data.get('message') or ''}".strip()
+        candidates: list[str] = []
+        results = data.get("results") or data.get("organic") or []
+        if isinstance(results, list):
+            for item in results[:2]:
+                if isinstance(item, dict):
+                    title = item.get("title") or item.get("name") or ""
+                    snippet = item.get("snippet") or item.get("content") or item.get("text") or ""
+                    candidates.append(_clip_text(f"{title} {snippet}", 180))
+        for key in ("answer", "content", "text", "snippet", "title"):
+            if data.get(key):
+                candidates.append(_clip_text(data.get(key), 180))
+        if candidates:
+            return f"{fn_name}: {' | '.join(x for x in candidates if x)[:260]}"
+    return f"{fn_name}: {_clip_text(content, 180)}"
+
+
+def _react_state_message(rows: list[dict], tool_call_count: int, repeated_tool_calls: int) -> dict:
+    tool_rows = [row for row in rows if row.get("role") == Role.TOOL.value and row.get("step_id")]
+    assistant_rows = [row for row in rows if row.get("role") == Role.ASSISTANT.value and row.get("step_id")]
+    evidence = [_tool_evidence_line(row) for row in tool_rows[-3:]]
+    last_assistant = ""
+    for row in reversed(assistant_rows):
+        content = str(row.get("content") or "").strip()
+        if content:
+            last_assistant = _clip_text(content, 180)
+            break
+    lines = [
+        "## ReAct State",
+        "Known:",
+        *(f"- {item}" for item in evidence if item),
+    ]
+    if not evidence:
+        lines.append("- No tool evidence yet; use the question and curated context.")
+    lines.extend(
+        [
+            "Need:",
+            "- Track one concrete missing evidence gap; if none remains, answer now.",
+            "Next:",
+            "- Use at most one targeted tool call, or stop with the supported answer.",
+            "Stop:",
+            "- Current-task evidence overrides memory. Do not repeat low-signal calls.",
+        ]
+    )
+    if last_assistant:
+        lines.extend(["Last:", f"- {last_assistant}"])
+    if repeated_tool_calls:
+        lines.extend(["Risk:", f"- {repeated_tool_calls} repeated calls so far; change strategy or answer."])
+    lines.append(f"Counts: tool_calls={tool_call_count}")
+    return {"role": "system", "content": _clip_block("\n".join(lines), REACT_STATE_MAX_CHARS)}
+
+
+def _messages_for_step(
+    traj: Trajectory,
+    *,
+    current_step: int,
+    tool_call_count: int,
+    repeated_tool_calls: int,
+) -> list[dict]:
+    if not ENABLE_REACT_STATE_COMPRESSION or current_step <= REACT_STATE_AFTER_STEPS:
+        return traj.to_messages()
+
+    rows = traj.read_all()
+    if len(rows) <= 4:
+        return [_message_from_entry(row) for row in rows]
+
+    system_rows = [row for row in rows if row.get("role") == Role.SYSTEM.value]
+    user_rows = [row for row in rows if row.get("role") == Role.USER.value]
+    messages: list[dict] = []
+    if system_rows:
+        messages.append(_message_from_entry(system_rows[0]))
+    if user_rows:
+        messages.append(_message_from_entry(user_rows[0]))
+    messages.append(_react_state_message(rows, tool_call_count, repeated_tool_calls))
+
+    cutoff = max(1, current_step - REACT_STATE_RECENT_STEPS)
+    recent = [
+        row
+        for row in rows
+        if row.get("step_id") is not None
+        and int(row.get("step_id") or 0) >= cutoff
+        and row.get("role") not in {Role.SYSTEM.value, Role.USER.value}
+    ]
+    messages.extend(_message_from_entry(row) for row in recent)
+    return messages
+
+
 # ---------------------------------------------------------------------------
 # Core run_task function
 # ---------------------------------------------------------------------------
@@ -528,7 +659,12 @@ def run_task(
     for step in range(1, max_steps + 1):
         logger.info("--- step %d ---", step)
 
-        messages = traj.to_messages()
+        messages = _messages_for_step(
+            traj,
+            current_step=step,
+            tool_call_count=tool_call_count,
+            repeated_tool_calls=repeated_tool_calls,
+        )
         logger.info("messages count=%d, sending to LLM ...", len(messages))
 
         # 构造请求参数：调试模式下不注册 tools，避免协议不匹配
@@ -675,6 +811,7 @@ def run_task(
             "tool_call_count": tool_call_count,
             "repeated_tool_calls": repeated_tool_calls,
             "reached_max_steps": reached_max_steps,
+            "react_state_compression": ENABLE_REACT_STATE_COMPRESSION,
             "curator_family": curated.family,
             "selected_skills": [skill.skill_id for skill in curated.selected_skills],
         }
@@ -709,7 +846,7 @@ def run_task(
             )
         )
         relevant_learned = [
-            skill for skill in skill_store.retrieve(reflection_query, k=int(os.getenv("REFLECTION_SKILL_CONTEXT_K", "4")))
+            skill for skill in skill_store.retrieve(reflection_query, k=int(os.getenv("REFLECTION_SKILL_CONTEXT_K", "2")))
             if skill.source == "learned"
         ]
         learned_skill_context = [
@@ -719,7 +856,7 @@ def run_task(
                 "domains": skill.domains,
                 "triggers": skill.triggers,
                 "summary": skill.summary,
-                "body_excerpt": str(skill.body or "")[:1800],
+                "body_excerpt": str(skill.body or "")[:700],
             }
             for skill in relevant_learned
         ]
@@ -767,24 +904,31 @@ def run_task(
             {
                 "op": "update",
                 "skill_id": "memory",
-                "title": "Memory Skill",
-                "domains": tags,
-                "triggers": tags,
-                "summary": "Reusable success patterns and compact task-solving habits.",
+                "title": "Long-Term Memory Skill",
+                "domains": ["general", "memory", *tags],
+                "triggers": ["fallback", "context selection", "evidence gap", "stop tool use", *tags],
+                "summary": "High-quality fallback procedure for evidence selection, tool discipline, stopping, and answer control when no narrower skill applies.",
                 "body": (
-                    "Use this skill for general task-solving habits when no narrower learned skill applies.\n\n"
-                    "## When to use\n"
-                    "- The task requires choosing a concise answer from mixed hints, search results, or compact evidence.\n"
-                    "- No specialized skill clearly covers the failure mode.\n\n"
-                    "## Procedure\n"
-                    "- Identify the requested answer type before using tools: entity, attribute, date, count, location, yes/no, or comparison.\n"
-                    "- Extract the core entity and relation from the question, then list the exact evidence gap.\n"
-                    "- Use compact dataset hints or already returned tool evidence first; call tools only for the unresolved gap.\n"
-                    "- Prefer one high-signal query over several broad searches, and stop after the evidence directly resolves the answer.\n"
-                    "- Preserve the answer granularity and language requested by the question.\n\n"
-                    "## Stop and output\n"
-                    "- If two evidence signals agree, answer instead of continuing to search.\n"
-                    "- Put only the final answer body inside <answer>...</answer> unless the user explicitly asks for explanation."
+                    "## Long-Term Memory\n"
+                    "### 适用触发 / When to use\n"
+                    "- Use only when no narrower learned skill directly matches the task type, entity class, or failure mode.\n"
+                    "- Use for general context risks: evidence over-selection, unnecessary tools, weak stopping, or answer-span drift.\n\n"
+                    "### 失败诊断 / Credit assignment\n"
+                    "- Identify the likely failure stage: answer type, evidence choice, tool choice, reasoning relation, stopping, or output granularity.\n"
+                    "- Promote decision rules only; keep one-off entity facts out of long-term memory.\n\n"
+                    "### 上下文/证据选择流程\n"
+                    "- Extract answer type, core entity, target relation, and exact missing evidence.\n"
+                    "- Prefer current-task evidence: visible/OCR text, compact hints, returned snippets/content, then browser text.\n"
+                    "- If `atomic_fact` identifies an entity and the question asks an external attribute, use that entity plus the requested relation as the bridge.\n\n"
+                    "### 工具计划\n"
+                    "- Call tools only after naming the evidence gap.\n"
+                    "- Prefer one targeted search query; use browser only when snippets omit or contradict the relation.\n\n"
+                    "### 停止/回退条件\n"
+                    "- Stop when evidence supports the exact requested span.\n"
+                    "- After repeated low-signal results, change strategy once or answer from best current evidence.\n\n"
+                    "### 输出格式风险\n"
+                    "- Preserve requested language, unit, granularity, and wrapper.\n"
+                    "- Return only the answer body inside <answer>...</answer>."
                 ),
                 "confidence": 0.55,
             }

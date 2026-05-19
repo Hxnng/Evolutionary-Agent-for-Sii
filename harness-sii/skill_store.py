@@ -21,6 +21,7 @@ _SAFE_ID_RE = re.compile(r"[^0-9A-Za-z_.-]+")
 _FRONT_MATTER_RE = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
 _TAG_SPLIT_RE = re.compile(r"[|,，、/;；]+")
 _BULLET_RE = re.compile(r"(?m)^\s*(?:[-*]|\d+[.、])\s+")
+_LONG_TERM_HEADING = "## Long-Term Memory"
 _FAMILY_TAGS = {"general", "simplevqa", "2wiki", "benchmark"}
 _GENERIC_TRIGGERS = {
     "task",
@@ -66,7 +67,8 @@ AGGREGATE_SKILL_IDS = {
 }
 MIN_NEW_SKILL_BODY_CHARS = int(os.getenv("MIN_NEW_SKILL_BODY_CHARS", "520"))
 MIN_UPDATE_SKILL_BODY_CHARS = int(os.getenv("MIN_UPDATE_SKILL_BODY_CHARS", "420"))
-DEFAULT_SKILL_RETRIEVE_K = int(os.getenv("SKILL_RETRIEVE_K", "3"))
+MAX_SKILL_BODY_CHARS = int(os.getenv("MAX_SKILL_BODY_CHARS", "4200"))
+DEFAULT_SKILL_RETRIEVE_K = int(os.getenv("SKILL_RETRIEVE_K", "2"))
 SKILL_MIN_SCORE = float(os.getenv("SKILL_MIN_SCORE", "2.75"))
 
 
@@ -222,12 +224,13 @@ def _actionability_score(body: str) -> int:
 
 
 def _has_professional_skill_shape(body: str) -> bool:
-    """Require skills to be procedures, not loose memories."""
+    """Require skills to be durable procedures, not loose memories."""
     lowered = (body or "").lower()
     required_groups = (
         ("适用", "触发", "when to use", "use when"),
         ("诊断", "判断", "diagnose", "credit assignment"),
-        ("流程", "步骤", "procedure", "workflow"),
+        ("上下文", "证据", "流程", "步骤", "procedure", "workflow"),
+        ("工具", "tool", "search", "browser"),
         ("停止", "回退", "stop", "fallback"),
         ("输出", "格式", "answer contract", "output"),
     )
@@ -238,6 +241,7 @@ def _is_actionable_body(body: str, *, is_new: bool) -> bool:
     min_chars = MIN_NEW_SKILL_BODY_CHARS if is_new else MIN_UPDATE_SKILL_BODY_CHARS
     return (
         len((body or "").strip()) >= min_chars
+        and len((body or "").strip()) <= MAX_SKILL_BODY_CHARS
         and _actionability_score(body) >= 7
         and _has_professional_skill_shape(body)
     )
@@ -253,6 +257,43 @@ def _merge_short_update(old_body: str, new_body: str) -> str:
         + "- Keep the existing procedure above as primary guidance.\n"
         + f"- Additional tactic to apply when relevant: {new_body}"
     )
+
+
+def _bounded_merge(old_body: str, new_body: str) -> str:
+    merged = _merge_short_update(old_body, new_body)
+    if len(merged.strip()) > MAX_SKILL_BODY_CHARS:
+        return old_body
+    return merged
+
+
+def _memory_long_section(body: str) -> str:
+    body = (body or "").strip()
+    if not body:
+        return (
+            _LONG_TERM_HEADING
+            + "\n### 适用触发 / When to use\n"
+            + "- Use only when no narrower learned skill matches and the task needs general evidence/tool discipline.\n"
+            + "- Prefer a knowledge or domain skill whenever one directly matches the answer type or entity class.\n\n"
+            + "### 失败诊断 / Credit assignment\n"
+            + "- First decide whether the risk is evidence selection, tool choice, reasoning composition, stopping, or output span.\n"
+            + "- Do not promote one-off entity facts into long-term memory; keep only rules that change future context construction.\n\n"
+            + "### 上下文/证据流程\n"
+            + "- Identify answer type, core entity, target relation, and the one missing evidence point.\n"
+            + "- Use compact evidence, source digest, candidate context, and already returned tool evidence before broad search.\n"
+            + "- Treat memory as strategy only; current-task evidence always wins.\n\n"
+            + "### 工具计划\n"
+            + "- Call a tool only for the named evidence gap.\n"
+            + "- Prefer one targeted search query; open browser only when snippets do not contain the needed relation.\n\n"
+            + "### 停止/回退条件\n"
+            + "- Stop once current evidence supports the exact requested span.\n"
+            + "- After repeated low-signal results, change strategy or answer from best supported evidence.\n\n"
+            + "### 输出格式风险\n"
+            + "- Preserve requested language, unit, granularity, and wrapper.\n"
+            + "- Output the answer body only inside <answer>...</answer>."
+        )
+    if _LONG_TERM_HEADING not in body:
+        body = _LONG_TERM_HEADING + "\n" + body
+    return body.strip()
 
 
 @dataclass
@@ -282,10 +323,9 @@ class Skill:
     def to_prompt_block(self) -> str:
         label = f"{self.skill_id}"
         summary = f" | {self.summary}" if self.summary else ""
-        body = _compact(self.body, int(os.getenv("SKILL_PROMPT_CHARS", "1200")))
-        domains = f"domains={', '.join(self.domains[:5])}" if self.domains else "domains=unspecified"
-        triggers = f"triggers={', '.join(self.triggers[:8])}" if self.triggers else "triggers=unspecified"
-        return f"### Skill: {label}\n- summary: {summary.lstrip(' | ') or self.title}\n- {domains}\n- {triggers}\n{body}"
+        body = _compact(self.body, int(os.getenv("SKILL_PROMPT_CHARS", "650")))
+        triggers = f"; triggers={', '.join(self.triggers[:5])}" if self.triggers else ""
+        return f"### {label}: {summary.lstrip(' | ') or self.title}{triggers}\n{body}"
 
 
 class SkillStore:
@@ -389,13 +429,21 @@ class SkillStore:
             body = str(update.get("body") or update.get("content") or "").strip()
             if old and op == "update":
                 body = body or old.body
+            if skill_id == "memory":
+                body = _memory_long_section(body)
             if not body:
                 continue
-            if old:
+            if len(body.strip()) > MAX_SKILL_BODY_CHARS:
+                continue
+            if skill_id == "memory" and old and not _is_actionable_body(body, is_new=False):
+                body = _bounded_merge(_memory_long_section(old.body), _memory_long_section(body))
+            elif skill_id == "memory" and not old and not _is_actionable_body(body, is_new=True):
+                body = _memory_long_section("")
+            elif old:
                 if not _is_actionable_body(body, is_new=False):
-                    body = _merge_short_update(old.body, body)
+                    body = _bounded_merge(old.body, body)
                 elif len(body) < len(old.body) * 0.45 and _actionability_score(body) <= _actionability_score(old.body):
-                    body = _merge_short_update(old.body, body)
+                    body = _bounded_merge(old.body, body)
             elif not _is_actionable_body(body, is_new=True):
                 continue
             skill = Skill(
@@ -457,23 +505,42 @@ class SkillStore:
         lines = [
             "# Learned Skill Index",
             "",
-            "This file is the lightweight routing index for curator-agent and reflector-agent.",
+            "This is a compact routing index for long-term learned skills.",
             "",
-            "Curator-agent should read this file first to decide which learned skill files may be useful, then load only the selected skill bodies.",
+            "Use it to choose which skill files are worth reading. Do not paste this index or whole skill files into generator context.",
             "",
-            "Learned skills are grouped by dataset/task family to avoid cross-dataset contamination:",
+            "## How Curator Uses This",
+            "",
+            "1. Read the current question first: answer type, entities, relation, evidence already present, and the exact missing evidence.",
+            "2. Use this index only for routing. Select a skill only when its summary/triggers match the question's concrete risk.",
+            "3. Read at most the few selected skill bodies, digest them, then write a short problem-specific context for generator.",
+            "4. The generator context should contain actions, evidence gaps, tool conditions, stop rules, and answer contract. It should not contain skill names, skill prose, or system prompts.",
+            "5. If no skill strongly matches, use `general/memory.md` as a fallback process, not as a source of facts.",
+            "",
+            "## How Reflector Uses This",
+            "",
+            "1. Do credit assignment from the trajectory: evidence, tool, reasoning, stopping, or output-format failure.",
+            "2. Update only the skill whose trigger truly matches the reusable failure mode.",
+            "3. Create a new knowledge/task skill only when the pattern has a narrow stable trigger and a reusable procedure.",
+            "4. Do not store one-off benchmark answers, task IDs, raw trajectory text, or short-term episode facts here.",
+            "",
+            "## Memory Boundary",
+            "",
+            "- `general/memory.md` is the long-term fallback memory skill for durable evidence/tool/format procedure.",
+            "- `_memory/short_term.md` is short-term trajectory diagnostics. It is not a skill and must not be loaded into generator context.",
+            "- Current-task evidence always overrides learned memory.",
+            "",
+            "## Directory Routing",
+            "",
             "- `simplevqa/`: visual QA, OCR, image-entity and image-to-attribute skills.",
             "- `2wiki/`: 2WikiMultihopQA evidence-graph and comparison skills.",
-            "- `general/`: cross-dataset memory and generic harness policies.",
-            "- `_memory/`: short-term episodic traces; not long-term skill memory.",
-            "",
-            "Reflector-agent should read this file first to decide which learned skill is involved in the current failure, then update that specific skill file and refresh this index.",
+            "- `general/`: cross-dataset fallback, tool, evidence, format, and other generic procedures.",
             "",
             "## Seed Skill",
             "",
-            "- `init_skill`: General startup guidance. Stored in `../skills/init_skill.md` and used when no learned skill clearly applies.",
+            "- `init_skill`: seed startup guidance in `../skills/init_skill.md`; use only when no learned skill clearly applies.",
             "",
-            "## Learned Skills By Dataset",
+            "## Learned Skill Catalog",
             "",
         ]
         if learned:
@@ -517,6 +584,10 @@ class SkillStore:
         for item in domains:
             if item in AGGREGATE_SKILL_IDS and item != "memory":
                 return item
+        for value in (update.get("title"), update.get("summary")):
+            candidate = _slug(str(value or ""))
+            if candidate and candidate not in _GENERIC_TRIGGERS and candidate not in _FAMILY_TAGS:
+                return candidate
         return "memory"
 
     def _canonical_skill_id(self, skill_id: str, update: dict[str, Any]) -> str:
@@ -527,6 +598,9 @@ class SkillStore:
             first = raw.split(".", 1)[0]
             if first in AGGREGATE_SKILL_IDS:
                 return first
+            candidate = _slug(raw)
+            if candidate and candidate not in _GENERIC_TRIGGERS and candidate not in _FAMILY_TAGS:
+                return candidate
         return ""
 
     def _read_skill_file(self, path: Path, *, source: str) -> Skill | None:
@@ -569,8 +643,8 @@ def format_skills_for_prompt(skills: list[Skill]) -> str:
     if not skills:
         return ""
     lines = [
-        "## Long-Term Skill Memory",
-        "These selected learned skills are durable procedural memory. Use them for context selection, evidence handling, tool use, and answer control; they are not factual evidence for the current task.",
+        "## Selected Micro-Skills",
+        "Use only if the trigger matches; current evidence wins.",
     ]
     for skill in skills:
         lines.append(skill.to_prompt_block())

@@ -71,7 +71,7 @@ python -B task_runner.py \
 ## SimpleVQA
 
 进化版默认会注入数据集中的非答案线索（如 `atomic_fact`、`source`、类别信息）并启用 skill evolution；基线用 `--baseline` 关闭这些增强，便于做评分要求里的对比实验。
-这些线索会先交给 `curator.py`。curator 是一个独立 LLM 角色：它读取题目、工具列表、`learned_skills/SKILL.md` 动态索引（首次训练前可不存在）、唯一初始 `skills/init_skill.md` 摘要，判断 generator 可能用到哪些 skill，然后生成结构化 context。context 包括题目要求、答题要点、工具调用计划，最后拼接 curator 选中的 skill 正文。reflector 训练时只写 `learned_skills/`，并采用聚合 skill 结构：`memory.md`、`search.md`、`format.md`、`tool.md` 等；第一次有效更新会自动创建 `learned_skills/SKILL.md`，之后每次修改对应文件都会刷新索引，不改 seed skill 目录。
+这些线索会先交给 `curator.py`。curator 是一个独立 LLM 角色：它读取题目、工具列表、`learned_skills/SKILL.md` 动态索引（首次训练前可不存在）、唯一初始 `skills/init_skill.md` 摘要，判断 generator 可能用到哪些 skill，然后生成结构化 context。context 包括题目要求、答题要点、工具调用计划，最后拼接 curator 选中的 skill 正文。reflector 训练时只写 `learned_skills/`，并采用聚合 skill 结构：`memory.md`、`search.md`、`format.md`、`tool.md` 等；其中长期 memory skill 是 `learned_skills/general/memory.md`，短期轨迹诊断单独写入 `learned_skills/_memory/short_term.md`，不会作为 skill 被自动检索。第一次有效更新会自动创建或刷新 `learned_skills/SKILL.md`，不改 seed skill 目录。
 
 ```bash
 python -B evaluate.py \
