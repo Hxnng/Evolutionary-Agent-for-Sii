@@ -259,6 +259,28 @@ python -B evaluate_benchmark.py \
   --workers 8
 ```
 
+并行 + 生成打榜提交文件（组号为11）：
+
+```bash
+python -B evaluate_benchmark.py \
+  --dataset data/benchmark.csv \
+  --output runs/evolved/benchmark_predictions.jsonl \
+  --metrics-output runs/evolved/benchmark_metrics.json \
+  --traj-dir runs/evolved/benchmark_trajectories \
+  --split-name benchmark \
+  --workers 8 \
+  --group-number 11 \
+  --submission-dir submission/
+```
+
+### 提交文件格式
+
+生成的文件在 `submission/` 目录：
+- `group_11.json` - 轨迹文件（包含每个问题的完整推理轨迹）
+- `group_11.csv` - 答案文件（包含index, problem, image, answer列）
+- `group_11.zip` - 压缩文件（提交此文件）
+
+
 统一流水线（可选，支持 `DATASET_NAME` / `WORKERS` / baseline+evolved）：
 
 ```bash
