@@ -289,6 +289,25 @@ def _direct_upload_local_image(path: Path) -> str:
     return url
 
 
+def _image_search_unavailable(reason: str, image: str = "") -> list[dict]:
+    return [
+        {
+            "rank": 1,
+            "title": "image search unavailable",
+            "url": "",
+            "snippet": (
+                "Reverse image search could not run because the local image "
+                f"could not be converted to a public URL: {reason}. "
+                "Use the model's visual understanding, atomic_fact/source_digest, "
+                "or search_text with the identified entity and requested attribute."
+            ),
+            "ok": False,
+            "error": reason,
+            "image": image,
+        }
+    ]
+
+
 def _resolve_image_to_url_direct(image: str) -> str:
     if image.startswith("http://") or image.startswith("https://"):
         return image
@@ -429,11 +448,21 @@ def search_image(
                 raise
             logger.warning("search proxy failed; falling back to direct mode: %s", exc)
 
-    image_url = _resolve_image_to_url_direct(image.strip())
+    try:
+        image_url = _resolve_image_to_url_direct(image.strip())
+    except Exception as exc:  # noqa: BLE001
+        reason = f"{type(exc).__name__}: {exc}"
+        logger.warning("search_image direct unavailable: %s", reason)
+        return _image_search_unavailable(reason, image=image.strip())
     logger.info("search_image(direct) image_url=%s top_k=%d fetch=%s",
                 image_url, top_k, fetch)
     payload = {"url": image_url}
-    data = _serper_post(SERPER_LENS_URL, payload)
+    try:
+        data = _serper_post(SERPER_LENS_URL, payload)
+    except Exception as exc:  # noqa: BLE001
+        reason = f"{type(exc).__name__}: {exc}"
+        logger.warning("search_image lens request failed: %s", reason)
+        return _image_search_unavailable(reason, image=image_url)
     items = data.get("organic") or data.get("visual_matches") or []
 
     results: list[dict] = []
