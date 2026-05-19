@@ -7,6 +7,7 @@ Meta-Harness Filesystem Manager
 """
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,6 +16,8 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict
 import glob
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -121,6 +124,8 @@ class FilesystemManager:
         """存储单个任务的轨迹"""
         if not self._is_valid_id(candidate_id):
             raise ValueError(f"无效的candidate_id: {candidate_id}")
+        if not self._is_valid_id(task_id):
+            raise ValueError(f"无效的task_id: {task_id}")
 
         try:
             trajectories_dir = self._get_candidate_dir(candidate_id) / "trajectories"
@@ -146,6 +151,9 @@ class FilesystemManager:
 
     def get_candidate_info(self, candidate_id: str) -> Optional[CandidateInfo]:
         """获取候选信息"""
+        if not self._is_valid_id(candidate_id):
+            raise ValueError(f"无效的candidate_id: {candidate_id}")
+
         candidate_dir = self._get_candidate_dir(candidate_id)
         if not candidate_dir.exists():
             return None
@@ -216,6 +224,9 @@ class FilesystemManager:
 
     def get_all_trajectories(self, candidate_id: str) -> Dict[str, List[Dict]]:
         """获取候选的所有轨迹"""
+        if not self._is_valid_id(candidate_id):
+            raise ValueError(f"无效的candidate_id: {candidate_id}")
+
         trajectories_dir = self._get_candidate_dir(candidate_id) / "trajectories"
         trajectories = {}
 
@@ -242,11 +253,15 @@ class FilesystemManager:
 
     def list_candidates(self) -> List[str]:
         """列出所有候选ID"""
-        candidates = []
-        for item in self.base_dir.iterdir():
-            if item.is_dir() and (item / "harness.py").exists():
-                candidates.append(item.name)
-        return sorted(candidates)
+        try:
+            candidates = []
+            for item in self.base_dir.iterdir():
+                if item.is_dir() and (item / "harness.py").exists():
+                    candidates.append(item.name)
+            return sorted(candidates)
+        except OSError as e:
+            logger.error(f"列出候选目录失败: {e}")
+            return []
 
     def get_all_candidates_info(self) -> List[CandidateInfo]:
         """获取所有候选的信息"""
@@ -259,6 +274,9 @@ class FilesystemManager:
 
     def get_candidate_summary(self, candidate_id: str) -> Dict[str, Any]:
         """获取候选摘要（用于proposer上下文）"""
+        if not self._is_valid_id(candidate_id):
+            raise ValueError(f"无效的candidate_id: {candidate_id}")
+
         info = self.get_candidate_info(candidate_id)
         scores = self.get_scores(candidate_id)
 
@@ -295,5 +313,7 @@ class FilesystemManager:
     def clear_all(self):
         """清空所有候选"""
         if self.base_dir.exists():
+            logger.warning(f"清空所有候选目录: {self.base_dir}")
             shutil.rmtree(self.base_dir)
             self.base_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("所有候选目录已清空")
