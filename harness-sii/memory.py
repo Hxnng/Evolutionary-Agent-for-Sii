@@ -12,10 +12,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+_MEMORY_APPEND_LOCK = threading.Lock()
 
 
 _TOKEN_RE = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
@@ -121,8 +124,9 @@ class MemoryStore:
             recent = self.read_all()[-80:]
             if any(row.get("fingerprint") == fingerprint for row in recent):
                 return
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        with _MEMORY_APPEND_LOCK:
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     @staticmethod
     def _fingerprint(record: dict[str, Any]) -> str:
