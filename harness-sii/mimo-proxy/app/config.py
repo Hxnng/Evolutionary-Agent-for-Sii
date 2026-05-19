@@ -11,7 +11,7 @@ class Settings:
     """Environment-driven settings."""
 
     host: str = os.getenv("MIMO_PROXY_HOST", "127.0.0.1")
-    port: int = int(os.getenv("MIMO_PROXY_PORT", "8088"))
+    port: int = int(os.getenv("MIMO_PROXY_PORT", "8089"))
 
     # mimo API配置
     mimo_api_key: str = os.getenv("MIMO_API_KEY", "tp-cjeqnl3h4ekv8c1oot1s6pzp0x20yq886hs5d6x6e94f83qb")

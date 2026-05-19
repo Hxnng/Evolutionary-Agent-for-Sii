@@ -95,13 +95,17 @@ class Evaluator:
         return results
     
     def _evaluate_single_dataset(self, harness_code: str, dataset_name: str,
-                                size: int, threads: int, 
+                                size: int, threads: int,
                                 candidate_id: str) -> HarnessScores:
         """评估单个数据集"""
         # 使用harness-sii的run_dataset函数
         output_path = Path(f"/tmp/{candidate_id}_predictions.jsonl")
         traj_dir = Path(f"/tmp/{candidate_id}_trajectories")
-        
+
+        # 获取模型配置
+        model_name = self.config.api.generator_model
+        llm_base_url = self.config.api.generator_base_url
+
         try:
             metrics = run_dataset(
                 dataset_path=Path(self.config.data.simplevqa_path if dataset_name == "simplevqa" else self.config.data.wiki2_path),
@@ -111,6 +115,8 @@ class Evaluator:
                 limit=size,
                 split_name=dataset_name,
                 evolved=True,
+                model_name=model_name,
+                llm_base_url=llm_base_url,
                 workers=threads,
             )
             
