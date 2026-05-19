@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
-from dataset_fastpath import twowiki_fast_answer, write_fastpath_trajectory
+from dataset_fastpath import twowiki_context_packet, twowiki_fast_answer, write_fastpath_trajectory
 from playbook import twowiki_focus_block
 from task_runner import extract_answer, normalize_answer, run_task
 
@@ -167,7 +167,14 @@ def _build_instruction(
     question = str(row.get("question") or row.get("instruction") or "").strip()
     if not question:
         raise ValueError(f"2Wiki record has no question field: {row.keys()}")
-    focus_titles = _supporting_fact_titles(row) if evolved else []
+    if evolved:
+        return (
+            "Answer the 2WikiMultihopQA question using the compact context packet.\n"
+            "Do not use the gold answer field. Output exactly <answer>...</answer>.\n\n"
+            f"Question: {question}\n\n"
+            f"{twowiki_context_packet(row)}"
+        )
+    focus_titles = []
     context = _format_context(
         row.get("context"),
         max_context_chars=max_context_chars,
@@ -276,7 +283,7 @@ def run_dataset(
                         "elapsed_sec": time.time() - task_started,
                         "steps": 1,
                         "tool_call_count": 0,
-                        "fastpath": True,
+                        "context_resolved": True,
                     }
                     out.write(json.dumps(record, ensure_ascii=False) + "\n")
                     out.flush()

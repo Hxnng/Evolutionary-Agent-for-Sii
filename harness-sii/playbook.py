@@ -63,7 +63,7 @@ def compact_text(text: Any) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
-def _source_digest(source: str, max_chars: int = 700) -> str:
+def _source_digest(source: str, max_chars: int = 360) -> str:
     source = unquote(str(source or "")).replace("\\u003d", "=")
     if not source:
         return ""
@@ -96,7 +96,7 @@ def simplevqa_hint_block(row: dict[str, Any]) -> str:
     if atomic_question:
         lines.append(f"识别子问题 atomic_question: {atomic_question}")
     if source:
-        lines.append(f"候选核验来源摘要: {source}")
+        lines.append(f"source_digest: {source}")
     task_category = compact_text(category.get("task_category"))
     subject_category = compact_text(category.get("subject_category"))
     entity_class = compact_text(category.get("entity_class"))

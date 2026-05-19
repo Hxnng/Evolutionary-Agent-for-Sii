@@ -121,7 +121,7 @@ def _run_one(
                 "trajectory_path": trajectory_path,
                 "elapsed_sec": 0.0,
                 "tool_call_count": 0,
-                "fastpath": True,
+                "context_resolved": True,
             }
 
     task = {

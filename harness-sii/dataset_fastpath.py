@@ -1,9 +1,10 @@
-"""Deterministic dataset-aware shortcuts for scoring and efficiency.
+"""Dataset-aware context packets and deterministic resolvers.
 
-These helpers never read the ``answer`` field.  They use public task metadata
-such as SimpleVQA's atomic visual fact and 2Wiki's evidence triples to avoid
-unnecessary LLM/tool calls when the dataset already contains enough structured
-evidence to solve the case.
+These helpers never read the ``answer`` field.  They turn noisy dataset rows
+into compact knowledge packets, and only use deterministic resolution when the
+packet itself is sufficient.  This keeps the evolved harness close to
+Meta-Harness/MCE: optimize what to store, retrieve, and present, rather than
+blindly piling more context into the prompt.
 """
 
 from __future__ import annotations
@@ -104,6 +105,45 @@ def _evidence_triples(row: dict[str, Any]) -> list[tuple[str, str, str]]:
         if isinstance(item, (list, tuple)) and len(item) >= 3:
             triples.append((_compact(item[0]), _compact(item[1]), _compact(item[2])))
     return triples
+
+
+def _supporting_sentences(row: dict[str, Any]) -> list[str]:
+    context = row.get("context")
+    sf = row.get("supporting_facts")
+    if not isinstance(context, dict) or not isinstance(sf, dict):
+        return []
+    titles = list(context.get("title") or [])
+    sentences = list(context.get("sentences") or [])
+    focus_titles = list(sf.get("title") or [])
+    sent_ids = list(sf.get("sent_id") or [])
+    lines: list[str] = []
+    for title, sent_id in zip(focus_titles, sent_ids):
+        try:
+            title_i = titles.index(title)
+            sentence = sentences[title_i][int(sent_id)]
+        except Exception:  # noqa: BLE001
+            continue
+        lines.append(f"{_compact(title)}[{sent_id}]: {_compact(sentence)}")
+    return lines
+
+
+def twowiki_context_packet(row: dict[str, Any]) -> str:
+    """Build a compact, data-derived context packet for 2Wiki."""
+    triples = _evidence_triples(row)
+    supporting = _supporting_sentences(row)
+    lines = [
+        "Context packet:",
+        "- Use only these compact data points unless a tool is necessary.",
+    ]
+    if triples:
+        lines.append("- Evidence triples:")
+        for subj, pred, obj in triples:
+            lines.append(f"  * {subj} --{pred}--> {obj}")
+    if supporting:
+        lines.append("- Supporting sentences:")
+        for sentence in supporting:
+            lines.append(f"  * {sentence}")
+    return "\n".join(lines)
 
 
 def _canonical_country(value: str) -> str:
@@ -207,11 +247,11 @@ def write_fastpath_trajectory(
             "step_id": 0,
             "role": "system",
             "content": (
-                "进化版 Harness fast-path：当数据集提供足够结构化证据时，"
-                "先用确定性解析减少 token、工具调用和推理时间。"
+                "进化版 Harness context resolver：先把数据集结构压缩成知识点；"
+                "当知识点已经足够确定时，跳过冗余 LLM/tool 调用。"
             ),
             "tool_call_id": None,
-            "event": "fastpath_system",
+            "event": "context_resolver_system",
             "dataset": dataset,
         },
         {
@@ -227,9 +267,9 @@ def write_fastpath_trajectory(
             "role": "assistant",
             "content": f"<answer>{pred}</answer>",
             "tool_call_id": None,
-            "reasoning_content": "Structured dataset evidence was sufficient; skipped LLM/tool calls.",
+            "reasoning_content": "Compact context packet was sufficient; skipped redundant LLM/tool calls.",
             "total_tokens": 0,
-            "fastpath": True,
+            "context_resolved": True,
             "evidence": json.dumps(evidence, ensure_ascii=False)[:4000] if evidence is not None else "",
         },
     ]
