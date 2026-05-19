@@ -13,6 +13,7 @@ import argparse
 import base64
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,60 @@ def _image_to_b64(image: str, image_root: Path | None) -> str | None:
     return base64.b64encode(path.read_bytes()).decode("utf-8")
 
 
+def _run_one(
+    row: dict[str, Any],
+    *,
+    source_index: int,
+    split_name: str,
+    image_root: Path | None,
+    trajectory_dir: Path,
+    evolved: bool,
+    model_name: str | None,
+    llm_base_url: str | None,
+) -> dict[str, Any]:
+    index = row.get("index", row.get("data_id", row.get("id", source_index)))
+    instruction = _build_instruction(row)
+    answer = _field(row, ("answer", "gold", "label", "target"))
+    image = _field(row, ("image", "image_path", "image_url", "img"), "")
+    image_url = image if image.startswith(("http://", "https://", "data:")) else ""
+    image_b64 = _image_to_b64(image, image_root)
+
+    task = {
+        "id": f"{split_name}_{index}",
+        "instruction": instruction,
+        "answer": answer,
+        "image": image,
+        "image_url": image_url,
+        "image_b64": image_b64,
+        "evolved": evolved,
+    }
+    task_started = time.time()
+    result = run_task(
+        task,
+        trajectory_dir=str(trajectory_dir),
+        model_name=model_name or None,
+        llm_base_url=llm_base_url or None,
+    )
+    pred = extract_answer(result.get("answer", ""))
+    success = bool(answer) and normalize_answer(pred) == normalize_answer(answer)
+    return {
+        "index": index,
+        "task_id": result.get("task_id", f"{split_name}_{index}"),
+        "dataset": split_name,
+        "instruction": instruction,
+        "image": image,
+        "source": row.get("source", ""),
+        "language": row.get("language", ""),
+        "answer": answer,
+        "pred": pred,
+        "success": success,
+        "steps": result.get("steps", 0),
+        "trajectory_path": result.get("trajectory_path", ""),
+        "elapsed_sec": time.time() - task_started,
+        "tool_call_count": result.get("summary", {}).get("tool_call_count", 0),
+    }
+
+
 def run_dataset(
     dataset_path: Path,
     output_path: Path,
@@ -78,6 +133,7 @@ def run_dataset(
     model_name: str | None = None,
     llm_base_url: str | None = None,
     metrics_output: Path | None = None,
+    workers: int = 1,
 ) -> dict[str, Any]:
     rows = _read_records(dataset_path)
     if offset:
@@ -90,53 +146,50 @@ def run_dataset(
     correct = 0
     total = 0
     started = time.time()
+    workers = max(1, int(workers))
 
     with output_path.open("w", encoding="utf-8") as out:
-        for local_i, row in enumerate(rows):
-            source_index = offset + local_i
-            index = row.get("index", row.get("data_id", row.get("id", source_index)))
-            instruction = _build_instruction(row)
-            answer = _field(row, ("answer", "gold", "label", "target"))
-            image = _field(row, ("image", "image_path", "image_url", "img"), "")
-            image_url = image if image.startswith(("http://", "https://", "data:")) else ""
-            image_b64 = _image_to_b64(image, image_root)
-
-            task = {
-                "id": f"{split_name}_{index}",
-                "instruction": instruction,
-                "answer": answer,
-                "image": image,
-                "image_url": image_url,
-                "image_b64": image_b64,
-                "evolved": evolved,
-            }
-            result = run_task(
-                task,
-                trajectory_dir=str(trajectory_dir),
-                model_name=model_name or None,
-                llm_base_url=llm_base_url or None,
+        if workers == 1:
+            record_iter = (
+                _run_one(
+                    row,
+                    source_index=offset + local_i,
+                    split_name=split_name,
+                    image_root=image_root,
+                    trajectory_dir=trajectory_dir,
+                    evolved=evolved,
+                    model_name=model_name,
+                    llm_base_url=llm_base_url,
+                )
+                for local_i, row in enumerate(rows)
             )
-            pred = extract_answer(result.get("answer", ""))
-            record = {
-                "index": index,
-                "task_id": result.get("task_id", f"{split_name}_{index}"),
-                "dataset": split_name,
-                "instruction": instruction,
-                "image": image,
-                "source": row.get("source", ""),
-                "language": row.get("language", ""),
-                "answer": answer,
-                "pred": pred,
-                "success": bool(result.get("success", False)),
-                "steps": result.get("steps", 0),
-                "trajectory_path": result.get("trajectory_path", ""),
-            }
-            out.write(json.dumps(record, ensure_ascii=False) + "\n")
-            out.flush()
-
-            total += 1
-            if answer and normalize_answer(pred) == normalize_answer(answer):
-                correct += 1
+            for record in record_iter:
+                out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                out.flush()
+                total += 1
+                correct += int(bool(record.get("answer")) and bool(record.get("success")))
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [
+                    pool.submit(
+                        _run_one,
+                        row,
+                        source_index=offset + local_i,
+                        split_name=split_name,
+                        image_root=image_root,
+                        trajectory_dir=trajectory_dir,
+                        evolved=evolved,
+                        model_name=model_name,
+                        llm_base_url=llm_base_url,
+                    )
+                    for local_i, row in enumerate(rows)
+                ]
+                for future in as_completed(futures):
+                    record = future.result()
+                    out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    out.flush()
+                    total += 1
+                    correct += int(bool(record.get("answer")) and bool(record.get("success")))
 
     elapsed = time.time() - started
     metrics = {
@@ -145,6 +198,7 @@ def run_dataset(
         "trajectory_dir": str(trajectory_dir),
         "split_name": split_name,
         "mode": "evolved" if evolved else "baseline",
+        "workers": workers,
         "total": total,
         "correct": correct,
         "accuracy": correct / total if total else 0.0,
@@ -172,6 +226,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--model", default=None)
     p.add_argument("--llm-url", default=None)
     p.add_argument("--metrics-output", type=Path, default=None)
+    p.add_argument("--workers", type=int, default=1, help="Parallel task workers. Start with 4-8 for full SimpleVQA.")
     return p.parse_args()
 
 
@@ -189,5 +244,6 @@ if __name__ == "__main__":
         model_name=args.model,
         llm_base_url=args.llm_url,
         metrics_output=args.metrics_output,
+        workers=args.workers,
     )
     print(json.dumps(metrics, ensure_ascii=False, indent=2))

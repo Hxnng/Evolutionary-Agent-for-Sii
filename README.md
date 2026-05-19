@@ -185,6 +185,21 @@ python -B evaluate.py \
   --limit 20
 ```
 
+全量并行可以去掉 `--limit`，并设置 `--workers`。建议先从 4 或 8 开始，稳定后再加大：
+
+```bash
+python -B evaluate.py \
+  --dataset data/simpleVQA/simpleVQA_final_modified.json \
+  --image-root data/simpleVQA/simpleVQA_datasets \
+  --output runs/evolved/simplevqa_full_predictions.jsonl \
+  --metrics-output runs/evolved/simplevqa_full_metrics.json \
+  --traj-dir runs/evolved/simplevqa_full_trajectories \
+  --split-name simplevqa \
+  --workers 8
+```
+
+如果百炼或搜索服务出现限流、超时、429，先降到 `--workers 4`；如果稳定且机器/接口额度允许，可以试 `--workers 12` 或 `--workers 16`。
+
 ### 2WikiMultihopQA
 
 ```bash

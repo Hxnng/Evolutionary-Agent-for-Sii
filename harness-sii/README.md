@@ -78,6 +78,21 @@ python -B evaluate.py \
   --limit 20
 ```
 
+全量并行：
+
+```bash
+python -B evaluate.py \
+  --dataset data/simpleVQA/simpleVQA_final_modified.json \
+  --image-root data/simpleVQA/simpleVQA_datasets \
+  --output runs/evolved/simplevqa_full_predictions.jsonl \
+  --metrics-output runs/evolved/simplevqa_full_metrics.json \
+  --traj-dir runs/evolved/simplevqa_full_trajectories \
+  --split-name simplevqa \
+  --workers 8
+```
+
+`--workers` 建议从 4 或 8 开始，稳定后再试 12/16。
+
 ## 2Wiki
 
 ```bash
