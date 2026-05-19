@@ -17,15 +17,15 @@ class APIConfig:
     proposer_base_url: str = "https://token-plan-cn.xiaomimimo.com/v1"
     proposer_model: str = "mimo-v2.5-pro"
 
-    # Generator配置（测试环境使用mimo，生产环境替换为Qwen）
-    generator_api_key: str = "tp-cjeqnl3h4ekv8c1oot1s6pzp0x20yq886hs5d6x6e94f83qb"
-    generator_base_url: str = "https://token-plan-cn.xiaomimimo.com/v1"
-    generator_model: str = "mimo-v2.5-pro"
+    # Generator配置
+    #generator_api_key: str = "tp-cjeqnl3h4ekv8c1oot1s6pzp0x20yq886hs5d6x6e94f83qb"
+    generator_base_url: str = "http://localhost:8000/v1"
+    generator_model: str = "Qwen3.5-9B"
 
-    # Reflector配置（测试环境使用mimo，生产环境替换为Qwen）
-    reflector_api_key: str = "tp-cjeqnl3h4ekv8c1oot1s6pzp0x20yq886hs5d6x6e94f83qb"
-    reflector_base_url: str = "https://token-plan-cn.xiaomimimo.com/v1"
-    reflector_model: str = "mimo-v2.5-pro"
+    # Reflector配置
+    #reflector_api_key: str = "tp-cjeqnl3h4ekv8c1oot1s6pzp0x20yq886hs5d6x6e94f83qb"
+    reflector_base_url: str = "http://localhost:8001/v1"
+    reflector_model: str = "Qwen3-32B"
 
 
 @dataclass
