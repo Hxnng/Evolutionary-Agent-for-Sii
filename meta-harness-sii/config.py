@@ -77,7 +77,7 @@ class ScoreWeights:
     """评分权重（按课程评分标准）"""
     # 进化效率（35分）
     accuracy_weight: float = 15.0  # 准确率提升（权重最高，略提高）
-    token_weight: float = 5.0  # Token优化
+    token_weight: float = 5.0  # Token优化（task_runner暂无token统计，evaluator中用steps替代）
     reasoning_weight: float = 5.0  # 推理轮数优化
     tool_weight: float = 5.0  # 工具调用优化
     time_weight: float = 5.0  # 推理时间优化
