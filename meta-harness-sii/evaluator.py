@@ -146,7 +146,7 @@ class Evaluator:
             avg_tool_calls = sum(r.tool_call_count for r in task_results) / len(task_results) if task_results else 0
             avg_elapsed_time = sum(r.elapsed_time for r in task_results) / len(task_results) if task_results else 0
             
-            # 计算总分
+            # 计算 总分
             weights = self.config.scores
             total_score = (
                 accuracy * weights.accuracy_weight +
