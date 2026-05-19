@@ -8,6 +8,7 @@ Meta-Harness Proposer
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from openai import OpenAI
@@ -215,7 +216,15 @@ class Proposer:
                 top_p=0.95
             )
 
+            # 校验API响应
+            if not response or not response.choices:
+                self.logger.error("API response is empty or has no choices")
+                return []
+
             response_text = response.choices[0].message.content
+            if not response_text:
+                self.logger.error("API response content is empty")
+                return []
 
             # 解析响应
             candidates = self._parse_response(response_text, num_candidates)
@@ -249,20 +258,51 @@ class Proposer:
             self.logger.error(f"Failed to propose candidates: {e}")
             return []
 
+    def _extract_json_from_response(self, response_text: str) -> Optional[Dict[str, Any]]:
+        """
+        从响应文本中提取JSON，使用多种策略：
+        1. 首先尝试匹配 ```json ... ``` 代码块
+        2. 然后尝试匹配 ``` ... ``` 代码块
+        3. 最后fallback到查找第一个 { 和最后一个 }
+        """
+        # 策略1: 匹配 ```json ... ``` 代码块
+        json_block_pattern = r'```json\s*\n?(.*?)\n?\s*```'
+        matches = re.findall(json_block_pattern, response_text, re.DOTALL)
+        if matches:
+            for match in matches:
+                try:
+                    return json.loads(match.strip())
+                except json.JSONDecodeError:
+                    continue
+
+        # 策略2: 匹配 ``` ... ``` 代码块（不指定语言）
+        code_block_pattern = r'```\s*\n?(.*?)\n?\s*```'
+        matches = re.findall(code_block_pattern, response_text, re.DOTALL)
+        if matches:
+            for match in matches:
+                try:
+                    return json.loads(match.strip())
+                except json.JSONDecodeError:
+                    continue
+
+        # 策略3: fallback - 查找第一个 { 和最后一个 }
+        json_start = response_text.find("{")
+        json_end = response_text.rfind("}") + 1
+        if json_start != -1 and json_end > 0:
+            try:
+                return json.loads(response_text[json_start:json_end])
+            except json.JSONDecodeError:
+                pass
+
+        return None
+
     def _parse_response(self, response_text: str, num_candidates: int) -> List[Dict[str, Any]]:
         """解析proposer的响应"""
         try:
-            # 尝试从响应中提取JSON
-            # 首先找到JSON块
-            json_start = response_text.find("{")
-            json_end = response_text.rfind("}") + 1
-
-            if json_start == -1 or json_end == 0:
+            data = self._extract_json_from_response(response_text)
+            if not data:
                 self.logger.error("No JSON found in response")
                 return []
-
-            json_str = response_text[json_start:json_end]
-            data = json.loads(json_str)
 
             candidates = data.get("candidates", [])
 
@@ -279,9 +319,6 @@ class Proposer:
 
             return parsed_candidates
 
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse JSON response: {e}")
-            return []
         except Exception as e:
             self.logger.error(f"Failed to parse response: {e}")
             return []
@@ -338,10 +375,40 @@ class Proposer:
                 top_p=0.95
             )
 
+            # 校验API响应
+            if not response or not response.choices:
+                self.logger.error("API response is empty or has no choices")
+                return []
+
             response_text = response.choices[0].message.content
+            if not response_text:
+                self.logger.error("API response content is empty")
+                return []
 
             # 解析响应
             variants = self._parse_initial_population_response(response_text, population_size)
+
+            # 将变体代码和描述存储到文件系统
+            for variant in variants:
+                variant_id = variant.get("id", "")
+                if not variant_id:
+                    continue
+                try:
+                    # 确保候选目录存在
+                    self.filesystem.create_candidate(
+                        candidate_id=variant_id,
+                        iteration=0,  # 初始种群迭代为0
+                        description=variant.get("description", "")
+                    )
+                    # 存储代码
+                    if "code" in variant:
+                        self.filesystem.store_harness_code(variant_id, variant["code"])
+                    # 存储推理过程（使用changes字段）
+                    if "changes" in variant:
+                        self.filesystem.store_reasoning(variant_id, variant["changes"])
+                    self.logger.info(f"Stored initial variant {variant_id} to filesystem")
+                except Exception as store_err:
+                    self.logger.error(f"Failed to store variant {variant_id}: {store_err}")
 
             self.logger.info(f"Generated {len(variants)} initial variants")
             return variants
@@ -354,16 +421,10 @@ class Proposer:
                                           population_size: int) -> List[Dict[str, Any]]:
         """解析初始种群生成的响应"""
         try:
-            # 提取JSON
-            json_start = response_text.find("{")
-            json_end = response_text.rfind("}") + 1
-
-            if json_start == -1 or json_end == 0:
+            data = self._extract_json_from_response(response_text)
+            if not data:
                 self.logger.error("No JSON found in response")
                 return []
-
-            json_str = response_text[json_start:json_end]
-            data = json.loads(json_str)
 
             variants = data.get("variants", [])
 
@@ -380,9 +441,6 @@ class Proposer:
 
             return parsed_variants
 
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse JSON response: {e}")
-            return []
         except Exception as e:
             self.logger.error(f"Failed to parse response: {e}")
             return []
