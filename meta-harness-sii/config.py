@@ -50,6 +50,15 @@ class SearchConfig:
     # 早停策略
     patience: int = 5  # 连续无改进则停止
 
+    # Proposer 搜索模式
+    proposer_mode: str = "module"  # "full" / "module" / "mixed"
+    allowed_modules: Optional[List[str]] = None  # 允许修改的子模块列表
+    sandbox_timeout: int = 300  # 子进程执行超时秒数
+
+    def __post_init__(self):
+        if self.allowed_modules is None:
+            self.allowed_modules = ["preprocessor.py", "postprocessor.py"]
+
 
 @dataclass
 class DataConfig:

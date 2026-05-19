@@ -454,6 +454,21 @@ def run_task(
     # ------------------------------------------------------------------ step 0
     # Write system turn
     system_prompt = _build_system_prompt(instruction, evolved=evolved)
+
+    # --- 可选预处理钩子：问题分析器 ---
+    try:
+        from preprocessor import preprocess_question
+        _analysis = preprocess_question(
+            instruction, client, model_name, image_url=image_url or ""
+        )
+        if _analysis:
+            system_prompt += f"\n\n## 问题分析\n{_analysis}"
+            logger.info("preprocessor: injected analysis into system prompt")
+    except ImportError:
+        pass  # preprocessor 模块不存在时静默跳过
+    except Exception as _pre_err:
+        logger.warning("preprocessor failed, skipping: %s", _pre_err)
+
     traj.write(Role.SYSTEM, system_prompt, step_id=0)
 
     # Build user message (optionally include image)
@@ -591,6 +606,20 @@ def run_task(
 
     summary = traj.summary()
     pred_answer = extract_answer(final_answer)
+
+    # --- 可选后处理钩子：答案精炼 ---
+    try:
+        from postprocessor import postprocess_answer
+        _refined = postprocess_answer(instruction, final_answer, client, model_name)
+        if _refined and _refined != final_answer:
+            final_answer = _refined
+            pred_answer = extract_answer(_refined)
+            logger.info("postprocessor: refined answer")
+    except ImportError:
+        pass  # postprocessor 模块不存在时静默跳过
+    except Exception as _post_err:
+        logger.warning("postprocessor failed, skipping: %s", _post_err)
+
     success = _is_success(pred_answer, str(gold_answer), reached_max_steps)
     elapsed = time.time() - started_at
     summary.update(

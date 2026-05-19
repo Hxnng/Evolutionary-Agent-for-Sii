@@ -29,7 +29,7 @@ class MetaLoop:
         # 初始化组件
         self.filesystem = FilesystemManager(self.config.harnesses_dir)
         self.evaluator = Evaluator(self.config)
-        self.proposer = Proposer(self.config.api, self.filesystem)
+        self.proposer = Proposer(self.config.api, self.filesystem, self.config.search)
 
         # 搜索状态
         self.current_iteration = 0
@@ -216,10 +216,17 @@ class MetaLoop:
         eval_size = self._get_eval_size(iteration)
         self.logger.info(f"Evaluation size: {eval_size}")
 
+        # 确定搜索模式
+        proposer_mode = self.config.search.proposer_mode
+        if proposer_mode == "mixed":
+            proposer_mode = "full" if iteration % 2 == 0 else "module"
+        self.logger.info(f"Proposer mode: {proposer_mode}")
+
         # Proposer提出新候选
         candidates = self.proposer.propose(
             iteration,
-            self.config.search.candidates_per_iteration
+            self.config.search.candidates_per_iteration,
+            mode=proposer_mode
         )
 
         if not candidates:
@@ -237,20 +244,36 @@ class MetaLoop:
                 description=candidate.get("description", "")
             )
 
-            # 存储代码
-            self.filesystem.store_harness_code(candidate_id, candidate["code"])
+            # 存储代码和模块
+            if proposer_mode == "module" and "modules" in candidate:
+                # 模块模式：存储各模块文件
+                combined_code = self.proposer._combine_module_code(candidate["modules"])
+                self.filesystem.store_harness_code(candidate_id, combined_code)
+                for mod_name, mod_code in candidate["modules"].items():
+                    mod_path = self.filesystem._get_candidate_dir(candidate_id) / mod_name
+                    mod_path.write_text(mod_code, encoding="utf-8")
+            else:
+                # 完整模式：存储完整 task_runner.py
+                self.filesystem.store_harness_code(candidate_id, candidate.get("code", ""))
 
             # 存储推理过程
             self.filesystem.store_reasoning(candidate_id, candidate.get("reasoning", ""))
 
+            # 提取模块文件（如果有）
+            module_files = candidate.get("modules", None)
+
             # 评估候选
-            self.logger.info(f"Evaluating candidate {candidate_id}...")
+            self.logger.info(f"Evaluating candidate {candidate_id} (mode={proposer_mode})...")
             try:
+                # 读取 task_runner.py 代码
+                harness_code = self.filesystem.get_harness_code(candidate_id) or ""
+
                 scores = self.evaluator.evaluate_both_datasets(
-                    candidate["code"],
+                    harness_code,
                     eval_size,
                     self.config.search.parallel_threads,
-                    candidate_id
+                    candidate_id,
+                    module_files=module_files
                 )
             except Exception as e:
                 self.logger.error(f"Evaluation failed for {candidate_id}: {e}")
@@ -269,15 +292,27 @@ class MetaLoop:
 
             self.filesystem.store_scores(candidate_id, scores_dict)
 
-            # 存储轨迹
+            # 存储轨迹（从轨迹文件读取）
             for dataset_name, harness_scores in scores.items():
                 if harness_scores.task_results:
                     for task_result in harness_scores.task_results:
-                        self.filesystem.store_trajectory(
-                            candidate_id,
-                            task_result.task_id,
-                            task_result.trajectory
-                        )
+                        if task_result.trajectory_path:
+                            traj_path = Path(task_result.trajectory_path)
+                            if traj_path.exists():
+                                try:
+                                    import json as _json
+                                    trajectory = []
+                                    with open(traj_path, "r", encoding="utf-8") as tf:
+                                        for line in tf:
+                                            if line.strip():
+                                                trajectory.append(_json.loads(line))
+                                    self.filesystem.store_trajectory(
+                                        candidate_id,
+                                        task_result.task_id,
+                                        trajectory
+                                    )
+                                except Exception as traj_err:
+                                    self.logger.warning(f"Failed to store trajectory: {traj_err}")
 
             # 更新Top候选列表
             self._update_top_candidates(candidate_id, scores)
