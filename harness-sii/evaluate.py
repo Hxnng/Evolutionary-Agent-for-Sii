@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from dataset_fastpath import simplevqa_fast_answer, write_fastpath_trajectory
-from playbook import simplevqa_hint_block
+from dataset_context import simplevqa_hint_block
 from task_runner import extract_answer, normalize_answer, run_task
 
 
