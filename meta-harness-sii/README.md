@@ -7,7 +7,7 @@
 ### 1. 安装依赖
 
 ```bash
-pip install openai
+pip install -r requirements.txt
 ```
 
 ### 2. 运行Meta-Harness
@@ -44,11 +44,18 @@ meta-harness-sii/
 ├── meta_loop.py          # 外循环主逻辑
 ├── proposer.py           # 提案代理
 ├── evaluator.py          # 评估器
+├── evaluate.py           # 评估脚本
+├── evaluate_2wiki.py     # 2Wiki评估脚本
+├── evaluate_benchmark.py # 基准评估脚本
 ├── filesystem.py         # 文件系统管理
 ├── config.py             # 配置
+├── task_runner.py        # 任务运行器
+├── requirements.txt      # 依赖列表
 ├── test_meta_harness.py  # 测试脚本
 ├── run_meta_harness.sh   # 启动脚本
 ├── harnesses/            # 候选harness存储
+├── test_harnesses/       # 测试harness存储
+├── trajectories/         # 轨迹存储
 ├── search_state.json     # 搜索状态
 └── pareto_front.json     # Pareto前沿
 ```
@@ -64,7 +71,6 @@ meta-harness-sii/
 
 ## 注意事项
 
-1. API key已写入源码，无需设置环境变量
-2. 测试环境使用mimo-v2.5-pro替代Qwen模型
-3. 支持断点续跑，可随时中断并恢复
-4. 分阶段评估：50→100→200条
+1. 测试环境使用mimo-v2.5-pro替代Qwen模型
+2. 支持断点续跑，可随时中断并恢复
+3. 分阶段评估：50→100→200条

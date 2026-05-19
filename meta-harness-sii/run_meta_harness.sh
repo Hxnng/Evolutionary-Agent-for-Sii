@@ -14,7 +14,7 @@ fi
 
 # 检查依赖
 echo "Checking dependencies..."
-pip install -q openai
+pip3 install -q -r requirements.txt
 
 # 运行Meta-Harness
 echo "Running Meta-Harness..."
