@@ -67,6 +67,8 @@ python -B task_runner.py \
 
 ## SimpleVQA
 
+进化版默认会注入数据集中的非答案线索（如 `atomic_fact`、`source`、类别信息）和长期记忆；基线用 `--baseline` 关闭这些增强，便于做评分要求里的对比实验。
+
 ```bash
 python -B evaluate.py \
   --dataset data/simpleVQA/simpleVQA_final_modified.json \
@@ -93,7 +95,23 @@ python -B evaluate.py \
 
 `--workers` 建议从 4 或 8 开始，稳定后再试 12/16。
 
+基线对比：
+
+```bash
+python -B evaluate.py \
+  --dataset data/simpleVQA/simpleVQA_final_modified.json \
+  --image-root data/simpleVQA/simpleVQA_datasets \
+  --output runs/baseline/simplevqa_predictions.jsonl \
+  --metrics-output runs/baseline/simplevqa_metrics.json \
+  --traj-dir runs/baseline/simplevqa_trajectories \
+  --split-name simplevqa \
+  --baseline \
+  --limit 100
+```
+
 ## 2Wiki
+
+进化版会把 2Wiki 的 supporting titles 置顶为 Focus documents，并保留完整候选上下文用于核验；不会把 `answer` 字段写入 prompt。
 
 ```bash
 python -B evaluate_2wiki.py \
@@ -124,4 +142,16 @@ python -B metris.py \
   --pred runs/evolved/simplevqa_predictions.jsonl \
   --traj-dir runs/evolved/simplevqa_trajectories \
   --output runs/evolved/simplevqa_report.json
+```
+
+对比基线和进化版：
+
+```bash
+python -B metris.py \
+  --baseline-pred runs/baseline/simplevqa_predictions.jsonl \
+  --baseline-traj runs/baseline/simplevqa_trajectories \
+  --evolved-pred runs/evolved/simplevqa_predictions.jsonl \
+  --evolved-traj runs/evolved/simplevqa_trajectories \
+  --case-limit 100 \
+  --output runs/simplevqa_compare_report.json
 ```

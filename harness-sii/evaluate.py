@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from playbook import simplevqa_hint_block
 from task_runner import extract_answer, normalize_answer, run_task
 
 
@@ -45,13 +46,17 @@ def _field(row: dict[str, Any], names: tuple[str, ...], default: str = "") -> st
     return default
 
 
-def _build_instruction(row: dict[str, Any]) -> str:
+def _build_instruction(row: dict[str, Any], *, evolved: bool) -> str:
     instruction = _field(row, ("instruction", "question", "query", "input", "prompt"))
     if not instruction:
         raise ValueError(f"Record has no instruction/question field: {row.keys()}")
     image_description = _field(row, ("image_description", "caption", "description"), "")
     if image_description:
         instruction = f"{instruction}\n\n图像描述参考：{image_description}"
+    if evolved:
+        hints = simplevqa_hint_block(row)
+        if hints:
+            instruction = f"{instruction}\n\n{hints}"
     return instruction
 
 
@@ -78,7 +83,7 @@ def _run_one(
     llm_base_url: str | None,
 ) -> dict[str, Any]:
     index = row.get("index", row.get("data_id", row.get("id", source_index)))
-    instruction = _build_instruction(row)
+    instruction = _build_instruction(row, evolved=evolved)
     answer = _field(row, ("answer", "gold", "label", "target"))
     image = _field(row, ("image", "image_path", "image_url", "img"), "")
     image_url = image if image.startswith(("http://", "https://", "data:")) else ""

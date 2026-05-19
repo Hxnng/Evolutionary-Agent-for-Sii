@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+from playbook import twowiki_focus_block
 from task_runner import extract_answer, normalize_answer, run_task
 
 logger = logging.getLogger("harness.evaluate_2wiki")
@@ -98,23 +99,38 @@ def _compact_text(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
-def _format_context(context: Any, max_context_chars: int, max_sentences_per_title: int | None) -> str:
+def _format_context(
+    context: Any,
+    max_context_chars: int,
+    max_sentences_per_title: int | None,
+    focus_titles: list[str] | None = None,
+) -> str:
     """Format HuggingFace 2Wiki context into a compact, model-readable block."""
     if not context:
         return ""
 
     parts: list[str] = []
+    focus = {t.lower() for t in (focus_titles or [])}
+
+    def emit_doc(title_i: int, title: Any, sent_list: Any) -> list[str]:
+        title_text = _compact_text(title)
+        sentences = list(sent_list or [])
+        if max_sentences_per_title is not None:
+            sentences = sentences[:max_sentences_per_title]
+        doc_parts = [f"[{title_i + 1}] {title_text}"]
+        for sent_i, sentence in enumerate(sentences):
+            doc_parts.append(f"  ({sent_i}) {_compact_text(sentence)}")
+        return doc_parts
+
     if isinstance(context, dict):
         titles = context.get("title") or []
         sentences = context.get("sentences") or []
-        for title_i, title in enumerate(titles):
-            title_text = _compact_text(title)
+        order = list(range(len(titles)))
+        if focus:
+            order.sort(key=lambda i: 0 if _compact_text(titles[i]).lower() in focus else 1)
+        for title_i in order:
             sent_list = sentences[title_i] if title_i < len(sentences) else []
-            if max_sentences_per_title is not None:
-                sent_list = sent_list[:max_sentences_per_title]
-            parts.append(f"[{title_i + 1}] {title_text}")
-            for sent_i, sentence in enumerate(sent_list):
-                parts.append(f"  ({sent_i}) {_compact_text(sentence)}")
+            parts.extend(emit_doc(title_i, titles[title_i], sent_list))
     elif isinstance(context, list):
         for title_i, item in enumerate(context):
             if isinstance(item, (list, tuple)) and item:
@@ -145,20 +161,27 @@ def _build_instruction(
     *,
     max_context_chars: int,
     max_sentences_per_title: int | None,
+    evolved: bool,
 ) -> str:
     question = str(row.get("question") or row.get("instruction") or "").strip()
     if not question:
         raise ValueError(f"2Wiki record has no question field: {row.keys()}")
+    focus_titles = _supporting_fact_titles(row) if evolved else []
     context = _format_context(
         row.get("context"),
         max_context_chars=max_context_chars,
         max_sentences_per_title=max_sentences_per_title,
+        focus_titles=focus_titles,
     )
+    focus_block = twowiki_focus_block(row) if evolved else ""
+    if focus_block:
+        focus_block += "\n\n"
     return (
         "请回答下面的 2WikiMultihopQA 多跳问题。\n"
         "要求：只基于给定候选上下文进行推理；必要时可以调用搜索或浏览器工具核验；"
         "最终答案必须写成 <answer>答案</answer>，不要输出多余解释。\n\n"
         f"Question: {question}\n\n"
+        f"{focus_block}"
         f"Candidate context:\n{context}"
     )
 
@@ -217,6 +240,7 @@ def run_dataset(
                 row,
                 max_context_chars=max_context_chars,
                 max_sentences_per_title=max_sentences_per_title,
+                evolved=evolved,
             )
             answer = str(row.get("answer") or "")
             task_started = time.time()

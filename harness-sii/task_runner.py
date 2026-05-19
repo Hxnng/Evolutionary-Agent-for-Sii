@@ -43,6 +43,7 @@ if load_dotenv is not None:
 from openai import OpenAI
 
 from memory import MemoryItem, MemoryStore, format_memories_for_prompt
+from playbook import playbook_for_instruction
 from reflection import reflect
 from roles import Role
 from trajectory import Trajectory
@@ -289,13 +290,23 @@ def extract_answer(text: str) -> str:
 
 
 def _build_system_prompt(instruction: str, evolved: bool) -> str:
-    if not evolved or not ENABLE_MEMORY:
+    if not evolved:
         return SYSTEM_PROMPT
-    memories = MemoryStore(MEMORY_PATH).retrieve(instruction, k=int(os.getenv("MEMORY_RETRIEVE_K", "5")))
+    prompt = f"{SYSTEM_PROMPT}\n\n{playbook_for_instruction(instruction)}"
+    if not ENABLE_MEMORY:
+        return prompt
+    memories = MemoryStore(MEMORY_PATH).retrieve(instruction, k=int(os.getenv("MEMORY_RETRIEVE_K", "6")))
     memory_block = format_memories_for_prompt(memories)
     if not memory_block:
-        return SYSTEM_PROMPT
-    return f"{SYSTEM_PROMPT}\n\n{memory_block}\n\n请优先复用这些经验，但不要照抄无关答案。"
+        return prompt
+    return f"{prompt}\n\n{memory_block}\n\n请优先复用这些经验，但不要照抄无关答案。"
+
+
+def _call_signature(name: str, args: dict) -> str:
+    try:
+        return f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True)}"
+    except TypeError:
+        return f"{name}:{str(args)}"
 
 
 def _is_success(pred: str, answer: str = "", reached_max_steps: bool = False) -> bool:
@@ -449,6 +460,8 @@ def run_task(
     model_name = model_name or MODEL_NAME
     started_at = time.time()
     tool_call_count = 0
+    repeated_tool_calls = 0
+    seen_tool_calls: dict[str, int] = {}
     reached_max_steps = False
 
     # ------------------------------------------------------------------ step 0
@@ -559,6 +572,23 @@ def run_task(
                 logger.warning("Bad tool args JSON: %s", exc)
 
             logger.info("tool_call: %s(%s)", fn_name, fn_args)
+            sig = _call_signature(fn_name, fn_args)
+            seen_tool_calls[sig] = seen_tool_calls.get(sig, 0) + 1
+            if seen_tool_calls[sig] > 1:
+                repeated_tool_calls += 1
+                if seen_tool_calls[sig] >= 3:
+                    tool_result = (
+                        "[HARNESS WARNING] Repeated identical tool call suppressed. "
+                        "Change query/URL or answer from existing evidence."
+                    )
+                    traj.write(
+                        Role.TOOL,
+                        tool_result,
+                        step_id=step,
+                        tool_call_id=tc.id,
+                        extra={"fn_name": fn_name, "fn_args": fn_args, "suppressed_repeat": True},
+                    )
+                    continue
 
             # Dispatch
             if fn_name not in TOOL_FN_MAP:
@@ -601,6 +631,7 @@ def run_task(
             "success": success,
             "elapsed_sec": elapsed,
             "tool_call_count": tool_call_count,
+            "repeated_tool_calls": repeated_tool_calls,
             "reached_max_steps": reached_max_steps,
         }
     )

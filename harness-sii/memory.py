@@ -56,8 +56,23 @@ class MemoryStore:
     def append(self, item: MemoryItem | dict[str, Any]) -> None:
         record = item.to_record() if isinstance(item, MemoryItem) else dict(item)
         record.setdefault("timestamp", time.time())
+        fingerprint = self._fingerprint(record)
+        if fingerprint:
+            record["fingerprint"] = fingerprint
+            recent = self.read_all()[-80:]
+            if any(row.get("fingerprint") == fingerprint for row in recent):
+                return
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    @staticmethod
+    def _fingerprint(record: dict[str, Any]) -> str:
+        core = " ".join(
+            str(record.get(key, ""))
+            for key in ("outcome", "lesson", "strategy", "tags")
+        )
+        toks = sorted(_tokens(core))
+        return "|".join(toks[:80])
 
     def read_all(self) -> list[dict[str, Any]]:
         if not self.path.exists():
@@ -76,6 +91,12 @@ class MemoryStore:
         query_tokens = _tokens(query)
         if not query_tokens:
             return []
+        query_lower = (query or "").lower()
+        query_family = ""
+        if "2wikimultihopqa" in query_lower or "candidate context:" in query_lower:
+            query_family = "2wiki"
+        elif "图像" in query or "image" in query_lower:
+            query_family = "simplevqa"
 
         scored: list[tuple[float, dict[str, Any]]] = []
         for row in self.read_all():
@@ -88,7 +109,11 @@ class MemoryStore:
                 continue
             recency = float(row.get("timestamp", 0.0)) / 1_000_000_000_000
             outcome_bonus = 0.3 if row.get("outcome") == "success" else 0.1
-            scored.append((overlap + outcome_bonus + recency, row))
+            tags = {str(x).lower() for x in row.get("tags", [])}
+            family_bonus = 1.5 if query_family and query_family in tags else 0.0
+            specificity_text = str(row.get("lesson", "")) + str(row.get("strategy", ""))
+            specificity_bonus = min(len(_tokens(specificity_text)) / 60, 1.0)
+            scored.append((overlap + outcome_bonus + family_bonus + specificity_bonus + recency, row))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [row for _, row in scored[: max(0, int(k))]]
