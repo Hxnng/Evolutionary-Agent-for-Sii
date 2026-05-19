@@ -14,7 +14,7 @@ class APIConfig:
     """API配置"""
     # Proposer配置（mimo V2.5 pro - 通过mimo-proxy代理）
     proposer_api_key: str = "any"  # mimo-proxy不需要认证
-    proposer_base_url: str = "http://localhost:8080/v1"  # mimo-proxy地址
+    proposer_base_url: str = "http://localhost:8088/v1"  # mimo-proxy地址
     proposer_model: str = "mimo-v2.5-pro"
 
     # Generator配置

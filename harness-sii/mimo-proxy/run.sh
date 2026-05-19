@@ -30,7 +30,7 @@ source .venv/bin/activate
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
-PORT="${MIMO_PROXY_PORT:-8080}"
+PORT="${MIMO_PROXY_PORT:-8088}"
 HOST="${MIMO_PROXY_HOST:-0.0.0.0}"
 
 echo "[mimo-proxy] Starting on ${HOST}:${PORT} …"
