@@ -10,6 +10,7 @@ items to later tasks.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import asdict, dataclass, field
@@ -18,6 +19,7 @@ from typing import Any
 
 
 _TOKEN_RE = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
+_SENT_SPLIT_RE = re.compile(r"[。；;.!?\n]+")
 
 
 def _tokens(text: str) -> set[str]:
@@ -28,6 +30,63 @@ def _tokens(text: str) -> set[str]:
     # adding a heavyweight tokenizer dependency.
     toks.update(ch for ch in text if "\u4e00" <= ch <= "\u9fff")
     return toks
+
+
+def _compact(text: Any, limit: int = 90) -> str:
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _first_sentence(text: str, limit: int = 90) -> str:
+    text = str(text or "").strip()
+    parts = [p.strip() for p in _SENT_SPLIT_RE.split(text) if p.strip()]
+    return _compact(parts[0] if parts else text, limit=limit)
+
+
+def _memory_kind(memory: dict[str, Any]) -> str:
+    text = " ".join(str(memory.get(k, "")) for k in ("instruction", "lesson", "strategy", "tags"))
+    rules = [
+        ("format", ("格式", "量词", "年份", "日期", "第", "输出", "answer")),
+        ("atomic", ("atomic_fact", "原子", "线索", "高置信", "直接")),
+        ("artifact", ("文物", "朝代", "时代", "断代", "青铜", "瓷器", "钱币")),
+        ("landmark", ("景观", "地标", "桥", "塔", "省份", "城市", "地点")),
+        ("ocr", ("书", "作者", "字体", "期刊", "海报", "OCR")),
+        ("tool", ("搜索", "工具", "浏览器", "search", "browser", "图搜")),
+    ]
+    for name, needles in rules:
+        if any(n in text for n in needles):
+            return name
+    return "general"
+
+
+def _compress_memory(memory: dict[str, Any]) -> dict[str, str]:
+    kind = _memory_kind(memory)
+    lesson = str(memory.get("lesson", "")).strip()
+    strategy = str(memory.get("strategy", "")).strip()
+    action = _first_sentence(strategy or lesson, limit=int(os.getenv("MEMORY_ITEM_CHARS", "90")))
+    if not action:
+        return {}
+    stale_image_retry = (
+        "图像识别工具" in action
+        and ("重新调用" in action or "image_path" in action)
+    ) or "0x0" in action
+    if stale_image_retry:
+        kind = "tool"
+        action = "图搜/上传失败时不要反复调用 search_image；改用 atomic_fact、source_digest 或 search_text 查询实体属性"
+    outcome = str(memory.get("outcome", "unknown"))
+    tags = memory.get("tags", [])
+    if isinstance(tags, list):
+        tag_text = ",".join(str(t) for t in tags[:3])
+    else:
+        tag_text = str(tags)
+    return {
+        "kind": kind,
+        "outcome": outcome,
+        "tags": _compact(tag_text, limit=36),
+        "action": action,
+    }
 
 
 @dataclass
@@ -122,15 +181,27 @@ class MemoryStore:
 def format_memories_for_prompt(memories: list[dict[str, Any]]) -> str:
     if not memories:
         return ""
+    max_items = max(0, int(os.getenv("MEMORY_PROMPT_K", "4")))
     lines = [
-        "## 可复用经验记忆",
-        "以下内容只作为工具使用和解题策略建议，不是当前题目的事实证据；若与当前搜索/页面结果冲突，必须以当前工具证据为准。",
+        "## Compact Memory",
+        "Only reusable tactics; not facts for the current question.",
     ]
-    for i, memory in enumerate(memories, start=1):
-        outcome = memory.get("outcome", "unknown")
-        lesson = str(memory.get("lesson", "")).strip()
-        strategy = str(memory.get("strategy", "")).strip()
-        if not lesson and not strategy:
+    seen: set[str] = set()
+    emitted = 0
+    for memory in memories:
+        item = _compress_memory(memory)
+        if not item:
             continue
-        lines.append(f"{i}. outcome={outcome}; lesson={lesson}; strategy={strategy}")
+        fingerprint = f"{item['kind']}:{item['action'][:42]}"
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        emitted += 1
+        lines.append(
+            f"- [{item['kind']}/{item['outcome']}] {item['action']}"
+        )
+        if emitted >= max_items:
+            break
+    if emitted == 0:
+        return ""
     return "\n".join(lines).strip()
