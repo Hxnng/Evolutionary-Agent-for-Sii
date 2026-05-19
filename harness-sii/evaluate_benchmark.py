@@ -18,6 +18,7 @@ import json
 import re
 import sys
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,7 @@ def _read_csv_records(path: Path) -> list[dict[str, Any]]:
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         rows = [dict(row) for row in reader]
-    missing = {"problem", "image", "answer"} - set(reader.fieldnames or [])
+    missing = {"problem", "image"} - set(reader.fieldnames or [])
     if missing:
         raise ValueError(f"CSV is missing required columns: {sorted(missing)}")
     return rows
@@ -136,6 +137,77 @@ def _run_one(
     }
 
 
+def _write_submission_answers(
+    *,
+    source_rows: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+    output_path: Path,
+) -> None:
+    by_index = {int(record["index"]): record for record in records}
+    fieldnames = [key for key in source_rows[0].keys() if not key.startswith("__")] if source_rows else ["problem", "image"]
+    if "answer" not in fieldnames:
+        fieldnames.append("answer")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in source_rows:
+            source_index = int(row.get("__source_index", len(by_index)))
+            out_row = {key: row.get(key, "") for key in fieldnames}
+            out_row["answer"] = by_index.get(source_index, {}).get("pred", "")
+            writer.writerow(out_row)
+
+
+def _write_submission_trajectory(records: list[dict[str, Any]], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as out:
+        for record in sorted(records, key=lambda item: int(item["index"])):
+            traj_path = Path(str(record.get("trajectory_path") or ""))
+            if not traj_path.exists():
+                continue
+            with traj_path.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.strip():
+                        out.write(
+                            json.dumps(
+                                _submission_trace_entry(json.loads(line), record),
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+
+
+def _submission_trace_entry(entry: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    if entry.get("role") != "user" or entry.get("step_id") != 0 or not record.get("image"):
+        return entry
+    content = entry.get("content")
+    if not isinstance(content, list):
+        return entry
+    text_parts = [item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"]
+    text = "\n".join(part for part in text_parts if part).strip()
+    image_ref = str(record.get("image") or "")
+    if text:
+        text = re.sub(r"输入图像的在线链接：\S+", f"image_url: {image_ref}", text)
+        text = re.sub(r"image_url:\s*\S+", f"image_url: {image_ref}", text)
+        if "image_url:" not in text:
+            text = f"{text}\nimage_url: {image_ref}"
+    else:
+        text = f"{record.get('problem', '')}\nimage_url: {image_ref}".strip()
+    updated = dict(entry)
+    updated["content"] = [
+        {"type": "image_url", "image_url": {"url": image_ref}},
+        {"type": "text", "text": text},
+    ]
+    return updated
+
+
+def _write_submission_zip(*, answer_csv: Path, trajectory_json: Path, zip_path: Path) -> None:
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.write(trajectory_json, arcname=trajectory_json.name)
+        zf.write(answer_csv, arcname=answer_csv.name)
+
+
 def _build_instruction(problem: str, has_image: bool) -> str:
     problem = problem.strip()
     if not problem:
@@ -168,8 +240,13 @@ def run_dataset(
     llm_base_url: str | None = None,
     metrics_output: Path | None = None,
     workers: int = 1,
+    group_id: str | None = None,
+    submission_dir: Path | None = None,
 ) -> dict[str, Any]:
-    rows = _read_csv_records(dataset_path)
+    all_rows = _read_csv_records(dataset_path)
+    for source_index, row in enumerate(all_rows):
+        row["__source_index"] = source_index
+    rows = all_rows
     if offset:
         rows = rows[offset:]
     if limit is not None:
@@ -183,6 +260,7 @@ def run_dataset(
     correct = 0
     started = time.time()
     workers = max(1, int(workers))
+    records: list[dict[str, Any]] = []
 
     def _score(record: dict[str, Any]) -> None:
         nonlocal total, answerable, correct
@@ -207,6 +285,7 @@ def run_dataset(
                 )
                 out.write(json.dumps(record, ensure_ascii=False) + "\n")
                 out.flush()
+                records.append(record)
                 _score(record)
         else:
             with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -228,7 +307,10 @@ def run_dataset(
                     record = future.result()
                     out.write(json.dumps(record, ensure_ascii=False) + "\n")
                     out.flush()
+                    records.append(record)
                     _score(record)
+
+    records.sort(key=lambda item: int(item["index"]))
 
     elapsed = time.time() - started
     metrics = {
@@ -244,6 +326,29 @@ def run_dataset(
         "accuracy": correct / answerable if answerable else 0.0,
         "elapsed_sec": elapsed,
     }
+    if group_id:
+        target_dir = submission_dir or output_path.parent
+        answer_csv = target_dir / f"group_{group_id}.csv"
+        trajectory_json = target_dir / f"group_{group_id}.json"
+        zip_path = target_dir / f"group_{group_id}.zip"
+        _write_submission_answers(
+            source_rows=rows,
+            records=records,
+            output_path=answer_csv,
+        )
+        _write_submission_trajectory(records, trajectory_json)
+        _write_submission_zip(
+            answer_csv=answer_csv,
+            trajectory_json=trajectory_json,
+            zip_path=zip_path,
+        )
+        metrics.update(
+            {
+                "submission_answer_csv": str(answer_csv),
+                "submission_trajectory_json": str(trajectory_json),
+                "submission_zip": str(zip_path),
+            }
+        )
     if metrics_output is not None:
         metrics_output.parent.mkdir(parents=True, exist_ok=True)
         metrics_output.write_text(
@@ -266,6 +371,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--model", default=None)
     p.add_argument("--llm-url", default=None)
     p.add_argument("--metrics-output", type=Path, default=None)
+    p.add_argument("--group-id", default=None, help="Generate group_{id}.csv/json/zip submission files.")
+    p.add_argument("--submission-dir", type=Path, default=None, help="Directory for group submission files.")
     p.add_argument(
         "--workers",
         type=int,
@@ -290,5 +397,7 @@ if __name__ == "__main__":
         llm_base_url=args.llm_url,
         metrics_output=args.metrics_output,
         workers=args.workers,
+        group_id=args.group_id,
+        submission_dir=args.submission_dir,
     )
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
