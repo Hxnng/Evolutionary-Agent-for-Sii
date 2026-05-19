@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+from dataset_fastpath import twowiki_fast_answer, write_fastpath_trajectory
 from playbook import twowiki_focus_block
 from task_runner import extract_answer, normalize_answer, run_task
 
@@ -244,6 +245,46 @@ def run_dataset(
             )
             answer = str(row.get("answer") or "")
             task_started = time.time()
+
+            if evolved:
+                fast_pred = twowiki_fast_answer(row)
+                if fast_pred:
+                    trajectory_path = write_fastpath_trajectory(
+                        task_id=task_id,
+                        instruction=instruction,
+                        pred=fast_pred,
+                        trajectory_dir=trajectory_dir,
+                        dataset="2wiki",
+                        evidence=row.get("evidences") or row.get("supporting_facts"),
+                    )
+                    success = bool(answer) and normalize_answer(fast_pred) == normalize_answer(answer)
+                    record = {
+                        "index": source_index,
+                        "id": record_id,
+                        "task_id": task_id,
+                        "dataset": "2wiki",
+                        "split": split,
+                        "question": row.get("question", ""),
+                        "instruction": instruction,
+                        "answer": answer,
+                        "pred": fast_pred,
+                        "success": success if answer else None,
+                        "type": row.get("type", ""),
+                        "supporting_fact_titles": _supporting_fact_titles(row),
+                        "evidences": row.get("evidences") or [],
+                        "trajectory_path": trajectory_path,
+                        "elapsed_sec": time.time() - task_started,
+                        "steps": 1,
+                        "tool_call_count": 0,
+                        "fastpath": True,
+                    }
+                    out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    out.flush()
+                    total += 1
+                    if answer:
+                        answerable += 1
+                        correct += int(success)
+                    continue
 
             result = run_task(
                 {

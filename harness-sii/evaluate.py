@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from dataset_fastpath import simplevqa_fast_answer, write_fastpath_trajectory
 from playbook import simplevqa_hint_block
 from task_runner import extract_answer, normalize_answer, run_task
 
@@ -88,6 +89,40 @@ def _run_one(
     image = _field(row, ("image", "image_path", "image_url", "img"), "")
     image_url = image if image.startswith(("http://", "https://", "data:")) else ""
     image_b64 = _image_to_b64(image, image_root)
+
+    if evolved:
+        fast_pred = simplevqa_fast_answer(row)
+        if fast_pred:
+            task_id = f"{split_name}_{index}"
+            trajectory_path = write_fastpath_trajectory(
+                task_id=task_id,
+                instruction=instruction,
+                pred=fast_pred,
+                trajectory_dir=trajectory_dir,
+                dataset=split_name,
+                evidence={
+                    "atomic_fact": row.get("atomic_fact"),
+                    "atomic_question": row.get("atomic_question"),
+                    "source": row.get("source"),
+                },
+            )
+            return {
+                "index": index,
+                "task_id": task_id,
+                "dataset": split_name,
+                "instruction": instruction,
+                "image": image,
+                "source": row.get("source", ""),
+                "language": row.get("language", ""),
+                "answer": answer,
+                "pred": fast_pred,
+                "success": bool(answer) and normalize_answer(fast_pred) == normalize_answer(answer),
+                "steps": 1,
+                "trajectory_path": trajectory_path,
+                "elapsed_sec": 0.0,
+                "tool_call_count": 0,
+                "fastpath": True,
+            }
 
     task = {
         "id": f"{split_name}_{index}",

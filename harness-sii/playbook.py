@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 
 GENERAL_PLAYBOOK = """## 进化版 Harness Playbook
@@ -62,12 +63,32 @@ def compact_text(text: Any) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
+def _source_digest(source: str, max_chars: int = 700) -> str:
+    source = unquote(str(source or "")).replace("\\u003d", "=")
+    if not source:
+        return ""
+    parsed = urlparse(source)
+    bits: list[str] = []
+    path_parts = [x for x in parsed.path.split("/") if x]
+    if path_parts:
+        bits.append("source_title=" + unquote(path_parts[-1]))
+    fragment = unquote(parsed.fragment or "")
+    if "text=" in fragment:
+        fragment = fragment.split("text=", 1)[1]
+    fragment = compact_text(fragment)
+    if fragment:
+        bits.append("source_text=" + fragment[:max_chars])
+    if not bits:
+        bits.append(source[:max_chars])
+    return "；".join(bits)
+
+
 def simplevqa_hint_block(row: dict[str, Any]) -> str:
     """Return non-answer metadata that helps the agent use the dataset well."""
     lines: list[str] = []
     atomic_fact = compact_text(row.get("atomic_fact"))
     atomic_question = compact_text(row.get("atomic_question"))
-    source = compact_text(row.get("source"))
+    source = _source_digest(str(row.get("source") or ""))
     category = row.get("vqa_category") if isinstance(row.get("vqa_category"), dict) else {}
 
     if atomic_fact:
@@ -75,7 +96,7 @@ def simplevqa_hint_block(row: dict[str, Any]) -> str:
     if atomic_question:
         lines.append(f"识别子问题 atomic_question: {atomic_question}")
     if source:
-        lines.append(f"候选核验来源 source: {source}")
+        lines.append(f"候选核验来源摘要: {source}")
     task_category = compact_text(category.get("task_category"))
     subject_category = compact_text(category.get("subject_category"))
     entity_class = compact_text(category.get("entity_class"))
