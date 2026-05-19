@@ -72,6 +72,15 @@ def _image_to_b64(image: str, image_root: Path | None) -> str | None:
     return base64.b64encode(path.read_bytes()).decode("utf-8")
 
 
+def _image_to_path(image: str, image_root: Path | None) -> str:
+    if not image or image.startswith(("http://", "https://", "data:")):
+        return ""
+    path = Path(image)
+    if not path.is_absolute() and image_root is not None:
+        path = image_root / image
+    return str(path.resolve()) if path.exists() else ""
+
+
 def _run_one(
     row: dict[str, Any],
     *,
@@ -88,6 +97,7 @@ def _run_one(
     answer = _field(row, ("answer", "gold", "label", "target"))
     image = _field(row, ("image", "image_path", "image_url", "img"), "")
     image_url = image if image.startswith(("http://", "https://", "data:")) else ""
+    image_path = _image_to_path(image, image_root)
     image_b64 = _image_to_b64(image, image_root)
 
     if evolved:
@@ -129,6 +139,7 @@ def _run_one(
         "instruction": instruction,
         "answer": answer,
         "image": image,
+        "image_path": image_path,
         "image_url": image_url,
         "image_b64": image_b64,
         "evolved": evolved,

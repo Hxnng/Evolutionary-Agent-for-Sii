@@ -292,7 +292,7 @@ def _direct_upload_local_image(path: Path) -> str:
 def _resolve_image_to_url_direct(image: str) -> str:
     if image.startswith("http://") or image.startswith("https://"):
         return image
-    p = Path(image).expanduser()
+    p = _resolve_local_image_path(image)
     if p.exists() and p.is_file():
         return _direct_upload_local_image(p)
     raise ValueError(
@@ -303,12 +303,54 @@ def _resolve_image_to_url_direct(image: str) -> str:
 def _resolve_image_to_url_proxy(image: str) -> str:
     if image.startswith("http://") or image.startswith("https://"):
         return image
-    p = Path(image).expanduser()
+    p = _resolve_local_image_path(image)
     if p.exists() and p.is_file():
         return _proxy_upload_local_image(p)
     raise ValueError(
         f"search_image: {image!r} is neither an http(s) URL nor an existing local file."
     )
+
+
+def _resolve_local_image_path(image: str) -> Path:
+    """Resolve absolute, relative, and common SimpleVQA image references."""
+    raw = (image or "").strip()
+    p = Path(raw).expanduser()
+    if p.exists() and p.is_file():
+        return p
+
+    here = Path(__file__).resolve()
+    harness_dir = here.parents[1]
+    roots: list[Path] = [
+        Path.cwd(),
+        harness_dir,
+        harness_dir / "data" / "simpleVQA" / "simpleVQA_datasets",
+    ]
+    env_roots = os.getenv("SEARCH_IMAGE_ROOTS") or os.getenv("IMAGE_ROOT") or ""
+    for part in env_roots.split(os.pathsep):
+        if part.strip():
+            roots.insert(0, Path(part.strip()).expanduser())
+
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.append(root / raw)
+        candidates.append(root / Path(raw).name)
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    # Last-resort bounded recursive lookup for bare filenames like
+    # ``5842....jpg`` produced by some vision APIs.
+    name = Path(raw).name
+    if name and name == raw and any(name.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")):
+        for root in roots:
+            if root.exists() and root.is_dir():
+                try:
+                    match = next(root.rglob(name), None)
+                except Exception:  # noqa: BLE001
+                    match = None
+                if match and match.is_file():
+                    return match
+    return p
 
 
 # ---------------------------------------------------------------------------
