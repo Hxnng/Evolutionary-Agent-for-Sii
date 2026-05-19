@@ -45,8 +45,7 @@ def _load_env_file(path: Path, override: bool = True) -> None:
 
 
 _here = Path(__file__).resolve()
-_load_env_file(_here.parents[1] / ".env", override=False)
-_load_env_file(_here / ".env", override=True)
+_load_env_file(_here.parent / ".env", override=True)
 
 
 # ---------------------------------------------------------------------------
