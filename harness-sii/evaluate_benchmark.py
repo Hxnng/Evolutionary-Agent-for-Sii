@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from task_runner import extract_answer, normalize_answer, run_task
+from task_runner import MAX_STEPS, extract_answer, normalize_answer, run_task
 
 
 def _read_csv_records(path: Path) -> list[dict[str, Any]]:
@@ -99,6 +99,7 @@ def _run_one(
     evolved: bool,
     model_name: str | None,
     llm_base_url: str | None,
+    max_steps: int | None,
 ) -> dict[str, Any]:
     image_url, safe_image = _image_to_url(row.get("image", ""), image_root)
     instruction = _build_instruction(str(row.get("problem") or ""), bool(image_url))
@@ -116,6 +117,7 @@ def _run_one(
         trajectory_dir=str(trajectory_dir),
         model_name=model_name or None,
         llm_base_url=llm_base_url or None,
+        max_steps=max_steps if max_steps is not None else MAX_STEPS,
     )
     pred = extract_answer(result.get("answer", ""))
     success = bool(answer) and normalize_answer(pred) == normalize_answer(answer)
@@ -242,6 +244,7 @@ def run_dataset(
     workers: int = 1,
     group_id: str | None = None,
     submission_dir: Path | None = None,
+    max_steps: int | None = None,
 ) -> dict[str, Any]:
     all_rows = _read_csv_records(dataset_path)
     for source_index, row in enumerate(all_rows):
@@ -282,6 +285,7 @@ def run_dataset(
                     evolved=evolved,
                     model_name=model_name,
                     llm_base_url=llm_base_url,
+                    max_steps=max_steps,
                 )
                 out.write(json.dumps(record, ensure_ascii=False) + "\n")
                 out.flush()
@@ -300,6 +304,7 @@ def run_dataset(
                         evolved=evolved,
                         model_name=model_name,
                         llm_base_url=llm_base_url,
+                        max_steps=max_steps,
                     )
                     for local_i, row in enumerate(rows)
                 ]
@@ -457,6 +462,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--model", default=None)
     p.add_argument("--llm-url", default=None)
     p.add_argument("--metrics-output", type=Path, default=None)
+    p.add_argument("--max-steps", type=int, default=None, help="Max agent loop steps. Defaults to MAX_STEPS from .env.")
     p.add_argument("--group-id", default=None, help="Generate group_{id}.csv/json/zip submission files.")
     p.add_argument("--submission-dir", type=Path, default=None, help="Directory for group submission files.")
     p.add_argument(
@@ -469,19 +475,14 @@ def _parse_args() -> argparse.Namespace:
         "--group-number",
         type=int,
         default=None,
-        help="Group number for generating submission files (e.g., 11).",
-    )
-    p.add_argument(
-        "--submission-dir",
-        type=Path,
-        default=Path("submission"),
-        help="Output directory for submission files.",
+        help="Alias for --group-id, kept for older commands.",
     )
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
+    group_id = args.group_id or (str(args.group_number) if args.group_number is not None else None)
     metrics = run_dataset(
         args.dataset,
         args.output,
@@ -495,8 +496,9 @@ if __name__ == "__main__":
         llm_base_url=args.llm_url,
         metrics_output=args.metrics_output,
         workers=args.workers,
-        group_id=args.group_id,
+        group_id=group_id,
         submission_dir=args.submission_dir,
+        max_steps=args.max_steps,
     )
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
 

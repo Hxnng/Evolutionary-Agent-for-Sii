@@ -70,7 +70,7 @@ logger = logging.getLogger("harness.task_runner")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "qwen3.5-35b-a3b")
 LLM_API_KEY  = os.getenv("LLM_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY") or "EMPTY"
-MAX_STEPS    = int(os.getenv("MAX_STEPS", "20"))
+MAX_STEPS    = int(os.getenv("MAX_STEPS", "50"))
 MAX_TOKENS   = int(os.getenv("MAX_TOKENS", "16000"))
 MEMORY_PATH  = os.getenv("MEMORY_PATH", "memory/long_term_memory.jsonl")
 ENABLE_MEMORY = os.getenv("ENABLE_MEMORY", "1") == "1"
