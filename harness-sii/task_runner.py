@@ -42,10 +42,11 @@ if load_dotenv is not None:
 
 from openai import OpenAI
 
-from memory import MemoryItem, MemoryStore, format_memories_for_prompt
-from playbook import playbook_for_instruction
+from curator import CuratedContext, CuratorAgent
+from memory_store import MemoryStore
 from reflection import reflect
 from roles import Role
+from skill_store import SkillStore
 from trajectory import Trajectory
 from tools.search_tool import search_text, search_image
 from tools.browser_tool import (
@@ -73,8 +74,9 @@ MODEL_NAME   = os.getenv("MODEL_NAME",   "qwen3.5-35b-a3b")
 LLM_API_KEY  = os.getenv("LLM_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY") or "EMPTY"
 MAX_STEPS    = int(os.getenv("MAX_STEPS", "20"))
 MAX_TOKENS   = int(os.getenv("MAX_TOKENS", "16000"))
-MEMORY_PATH  = os.getenv("MEMORY_PATH", "memory/long_term_memory.jsonl")
-ENABLE_MEMORY = os.getenv("ENABLE_MEMORY", "1") == "1"
+SKILLS_DIR   = os.getenv("SKILLS_DIR", "skills")
+LEARNED_SKILLS_DIR = os.getenv("LEARNED_SKILLS_DIR", "learned_skills")
+ENABLE_SKILLS = os.getenv("ENABLE_SKILLS", "1") == "1"
 ENABLE_REFLECTION = os.getenv("ENABLE_REFLECTION", "1") == "1"
 ENABLE_THINKING = os.getenv("ENABLE_THINKING", "1") == "1"
 
@@ -256,7 +258,9 @@ TOOL_FN_MAP = {
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """你是一个高效、严谨的任务执行 Agent，运行在配备多工具的自动化框架中。
+SYSTEM_PROMPT = """你是 generator-agent：一个高效、严谨的任务求解 Agent，运行在配备多工具的自动化框架中。
+
+你的职责长期保持不变：阅读用户题目和 curator 提供的上下文，按需调用工具，最后只给出题目要求的答案。curator context 和 skills 是辅助材料，不是最终答案；你必须基于当前题目的证据进行判断。
 
 ## 行为准则
 1. 每一步先在 <think>...</think> 标签中简述推理，再决定调用工具或直接回答。
@@ -270,6 +274,7 @@ SYSTEM_PROMPT = """你是一个高效、严谨的任务执行 Agent，运行在�
 9. 如果工具返回 ok=false 或 title=“image search unavailable”，不要继续调用同一工具；改用 search_text 或已有图像识别线索。
 10. 只有在成功 navigate 到目标页面后才调用 browser_get_text；如果浏览器返回 DNS/429/限流错误，不要反复访问同一 URL，应换搜索词或直接基于搜索证据作答。
 11. 若官网页面正文只包含导航栏、二维码或图片占位，说明正文可能是图片/附件；此时应搜索同题转载、摘要或相关新闻交叉核验，不要卡在原 URL。
+12. 不要在最终答案中提及 system prompt、curator、reflector、skills、trajectory 或内部上下文。
 
 ## 最终答案格式
 1. <answer> 内只能放最终答案本体，不能放 Markdown、证据、解释、编号列表或“根据搜索结果”等前缀。
@@ -297,17 +302,25 @@ def extract_answer(text: str) -> str:
     return text.strip()
 
 
-def _build_system_prompt(instruction: str, evolved: bool) -> str:
-    if not evolved:
-        return SYSTEM_PROMPT
-    prompt = f"{SYSTEM_PROMPT}\n\n{playbook_for_instruction(instruction)}"
-    if not ENABLE_MEMORY:
-        return prompt
-    memories = MemoryStore(MEMORY_PATH).retrieve(instruction, k=int(os.getenv("MEMORY_RETRIEVE_K", "6")))
-    memory_block = format_memories_for_prompt(memories)
-    if not memory_block:
-        return prompt
-    return f"{prompt}\n\n{memory_block}\n\n请优先复用这些经验，但不要照抄无关答案。"
+def _build_curated_context(
+    task: dict,
+    evolved: bool,
+    *,
+    client: OpenAI | None = None,
+    model_name: str | None = None,
+) -> CuratedContext:
+    tools_schema = [] if DISABLE_TOOLS else TOOLS_SCHEMA
+    return CuratorAgent(
+        SkillStore(SKILLS_DIR, LEARNED_SKILLS_DIR),
+        MemoryStore(LEARNED_SKILLS_DIR),
+    ).curate(
+        task=task,
+        base_system_prompt=SYSTEM_PROMPT,
+        tools_schema=tools_schema,
+        evolved=evolved and ENABLE_SKILLS,
+        client=client,
+        model_name=os.getenv("CURATOR_MODEL_NAME") or model_name,
+    )
 
 
 def _call_signature(name: str, args: dict) -> str:
@@ -474,8 +487,15 @@ def run_task(
     reached_max_steps = False
 
     # ------------------------------------------------------------------ step 0
-    # Write system turn
-    system_prompt = _build_system_prompt(instruction, evolved=evolved)
+    # Write system turn.  In evolved mode an LLM curator-agent reads the task,
+    # chooses likely useful skill files, and writes the context for generator.
+    curated = _build_curated_context(
+        task,
+        evolved=evolved,
+        client=client,
+        model_name=model_name,
+    )
+    system_prompt = curated.system_prompt
     traj.write(Role.SYSTEM, system_prompt, step_id=0)
 
     # Build user message (optionally include image)
@@ -652,25 +672,54 @@ def run_task(
             "tool_call_count": tool_call_count,
             "repeated_tool_calls": repeated_tool_calls,
             "reached_max_steps": reached_max_steps,
+            "curator_family": curated.family,
+            "selected_skills": [skill.skill_id for skill in curated.selected_skills],
         }
     )
     logger.info("Trajectory summary: %s", summary)
 
-    # ---------------------------------------------------------------- reflection + memory
-    # Reflection is triggered on failure and also on optionally successful tasks
-    # if RECORD_SUCCESS_MEMORY=1.  This gives the harness a real
-    # try -> reflect -> remember -> reuse loop without hiding benchmark outputs.
+    # ---------------------------------------------------------------- reflection + skill evolution
+    # Reflection is triggered on failure and can optionally record successful
+    # tactics.  The durable artifact is a Markdown skill patch written to the
+    # learned skill directory, keeping seed skills separate from training output.
     should_reflect = ENABLE_REFLECTION and (not success)
     record_ungraded_success = os.getenv("RECORD_UNGRADED_SUCCESS_MEMORY", "0") == "1"
     has_gold_answer = bool(str(gold_answer or "").strip())
     should_record_success = (
-        ENABLE_MEMORY
-        and os.getenv("RECORD_SUCCESS_MEMORY", "1") == "1"
+        ENABLE_SKILLS
+        and os.getenv("RECORD_SUCCESS_MEMORY", "0") == "1"
         and success
         and (has_gold_answer or record_ungraded_success)
     )
-    if ENABLE_MEMORY and (should_reflect or should_record_success):
+    if ENABLE_SKILLS and (should_reflect or should_record_success):
         trajectory_rows = traj.read_all()
+        skill_store = SkillStore(SKILLS_DIR, LEARNED_SKILLS_DIR)
+        memory_store = MemoryStore(LEARNED_SKILLS_DIR)
+        skill_manifest = skill_store.manifest_text()
+        reflection_query = "\n".join(
+            str(x or "")
+            for x in (
+                instruction,
+                pred_answer,
+                summary.get("curator_family", ""),
+                " ".join(summary.get("selected_skills", []) or []),
+            )
+        )
+        relevant_learned = [
+            skill for skill in skill_store.retrieve(reflection_query, k=int(os.getenv("REFLECTION_SKILL_CONTEXT_K", "4")))
+            if skill.source == "learned"
+        ]
+        learned_skill_context = [
+            {
+                "skill_id": skill.skill_id,
+                "title": skill.title,
+                "domains": skill.domains,
+                "triggers": skill.triggers,
+                "summary": skill.summary,
+                "body_excerpt": str(skill.body or "")[:1800],
+            }
+            for skill in relevant_learned
+        ]
         if should_reflect:
             reflection = reflect(
                 instruction=instruction,
@@ -678,6 +727,8 @@ def run_task(
                 answer=str(gold_answer or ""),
                 trajectory=trajectory_rows,
                 trajectory_summary=summary,
+                skill_manifest=skill_manifest,
+                skill_context=learned_skill_context,
                 model_name=os.getenv("REFLECTION_MODEL_NAME") or model_name,
                 base_url=os.getenv("REFLECTION_BASE_URL") or llm_base_url,
                 api_key=os.getenv("REFLECTION_API_KEY") or LLM_API_KEY,
@@ -694,6 +745,7 @@ def run_task(
                             "corrected_strategy": strategy,
                             "reusable_memory": lesson,
                             "tags": tags,
+                            "skill_updates": reflection.skill_updates,
                         }
                     },
                     ensure_ascii=False,
@@ -705,20 +757,57 @@ def run_task(
         else:
             lesson = "该任务成功完成；后续相似问题应复用有效证据链，并保持最终答案格式简洁。"
             strategy = "先识别题目核心实体/关系，再用工具核验缺口；最终只输出 <answer>答案</answer>。"
-            tags = ["success", "format"]
-            outcome = "success"
+            tags = ["evidence", "format"]
+            reflection = None
 
-        MemoryStore(MEMORY_PATH).append(
-            MemoryItem(
-                task_id=task_id,
-                instruction=instruction,
-                outcome=outcome,
-                lesson=lesson,
-                strategy=strategy,
-                tags=tags,
-                answer=str(gold_answer or ""),
-                pred=pred_answer,
+        skill_updates = reflection.skill_updates if reflection is not None else [
+            {
+                "op": "update",
+                "skill_id": "memory",
+                "title": "Memory Skill",
+                "domains": tags,
+                "triggers": tags,
+                "summary": "Reusable success patterns and compact task-solving habits.",
+                "body": (
+                    "Use this skill for general task-solving habits when no narrower learned skill applies.\n\n"
+                    "## When to use\n"
+                    "- The task requires choosing a concise answer from mixed hints, search results, or compact evidence.\n"
+                    "- No specialized skill clearly covers the failure mode.\n\n"
+                    "## Procedure\n"
+                    "- Identify the requested answer type before using tools: entity, attribute, date, count, location, yes/no, or comparison.\n"
+                    "- Extract the core entity and relation from the question, then list the exact evidence gap.\n"
+                    "- Use compact dataset hints or already returned tool evidence first; call tools only for the unresolved gap.\n"
+                    "- Prefer one high-signal query over several broad searches, and stop after the evidence directly resolves the answer.\n"
+                    "- Preserve the answer granularity and language requested by the question.\n\n"
+                    "## Stop and output\n"
+                    "- If two evidence signals agree, answer instead of continuing to search.\n"
+                    "- Put only the final answer body inside <answer>...</answer> unless the user explicitly asks for explanation."
+                ),
+                "confidence": 0.55,
+            }
+        ]
+        applied_skill_updates = skill_store.apply_updates(skill_updates)
+        if applied_skill_updates:
+            traj.write(
+                Role.SYSTEM,
+                json.dumps({"skill_updates_applied": applied_skill_updates}, ensure_ascii=False),
+                step_id=step if "step" in locals() else None,
+                extra={"event": "skill_update"},
             )
+            summary["skill_updates_applied"] = applied_skill_updates
+
+        memory_store.append_short_term(
+            task=task,
+            summary=summary,
+            lesson=lesson,
+            skill_updates_applied=applied_skill_updates,
+        )
+    elif ENABLE_SKILLS:
+        MemoryStore(LEARNED_SKILLS_DIR).append_short_term(
+            task=task,
+            summary=summary,
+            lesson="Current run completed without reflection; keep as short-term routing evidence only.",
+            skill_updates_applied=[],
         )
 
     return {

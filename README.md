@@ -1,6 +1,6 @@
 # Evolutionary Agent Harness for SII
 
-这是面向“自进化的任务求解智能体”课题的 harness 实现。当前版本已经接入百炼 Qwen、Serper/Jina 搜索、可选 search-proxy、浏览器沙盒、轨迹记录、失败反思、长期记忆、SimpleVQA/2Wiki/benchmark 批量评测与 metrics 汇总。
+这是面向“自进化的任务求解智能体”课题的 harness 实现。当前版本已经接入百炼 Qwen、Serper/Jina 搜索、可选 search-proxy、浏览器沙盒、轨迹记录、失败反思、skill 化长期经验、SimpleVQA/2Wiki/benchmark 批量评测与 metrics 汇总。
 
 ## 目录结构
 
@@ -8,8 +8,13 @@
 browser-service/             # Playwright 浏览器沙盒服务
 harness-sii/
   task_runner.py             # 单任务 ReAct 主循环
+  curator.py                 # curator-agent：为作答 agent 选择 context/tools/skills
+  skill_store.py             # Markdown skill 的统一读写与检索
+  skills/init_skill.md       # 唯一初始 seed skill
+  learned_skills/            # 训练时 reflector 实时产出的聚合 skill 和动态索引
+  dataset_context.py         # 数据集非答案线索压缩与 skill route 提示
+  dataset_fastpath.py        # 高置信数据包直接求解器
   trajectory.py              # JSONL 轨迹记录与回放
-  memory.py                  # 长期记忆检索与写入
   reflection.py              # 失败反思
   evaluate.py                # SimpleVQA JSON/JSONL 评测
   evaluate_2wiki.py          # 2Wiki parquet/JSON/JSONL 评测
@@ -62,8 +67,12 @@ SANDBOX_BASE_URL=http://127.0.0.1:8080
 ENABLE_THINKING=1
 DISABLE_TOOLS=0
 ENABLE_REFLECTION=1
-ENABLE_MEMORY=1
+ENABLE_SKILLS=1
+SKILLS_DIR=skills
+LEARNED_SKILLS_DIR=learned_skills
 ```
+
+进化版默认使用 skill-centric 闭环：初始化时只保留 `harness-sii/skills/init_skill.md`，`learned_skills/` 可以为空。第一次 reflector 产生有效 skill update 时，会自动创建 `harness-sii/learned_skills/SKILL.md` 动态索引，用简短说明列出各 learned skill 的功能，避免 curator/reflector 吞下所有 skill 正文。curator-agent 先读题目、工具和这个索引来判断 generator 可能需要哪些 skill，再拼接被选中的 skill 正文。reflector 失败后也先读索引定位涉及的聚合能力文件，例如 `memory.md`、`search.md`、`format.md`、`tool.md`，然后只优化对应 skill，并同步刷新 `learned_skills/SKILL.md`。
 
 `harness-sii/.env` 含真实 key，不要提交。项目已通过 `.gitignore` 忽略 `.env`、`data/`、`runs/`、`trajectories/`、checkpoint 等运行产物。
 
@@ -363,18 +372,20 @@ python -B metris.py \
 
 ```dotenv
 ENABLE_REFLECTION=1
-ENABLE_MEMORY=1
-MEMORY_PATH=memory/long_term_memory.jsonl
-RECORD_SUCCESS_MEMORY=1
+ENABLE_SKILLS=1
+SKILLS_DIR=skills
+LEARNED_SKILLS_DIR=learned_skills
+RECORD_SUCCESS_MEMORY=0
 RECORD_UNGRADED_SUCCESS_MEMORY=0
 ```
 
 流程：
 
-1. `task_runner.py` 执行 ReAct 工具循环。
-2. 失败时 `reflection.py` 生成失败原因、修正策略、可复用经验。
-3. `memory.py` 写入长期记忆。
-4. 后续任务检索相关记忆注入 prompt，但记忆只作为策略建议，不作为事实证据。
+1. `curator.py` 读取 `learned_skills/SKILL.md` 的动态索引（如果尚未创建，则视为暂无 learned skill）和 `skills/init_skill.md` 摘要，选择本题需要的 skill。
+2. `curator.py` 调用 curator LLM 生成给 generator 的结构化 context，内容包括题目要求、答题要点、工具调用计划和被选中的 skill 正文。
+3. `task_runner.py` 使用 curator 生成的 context 执行 ReAct 工具循环。
+4. 失败时 `reflection.py` 生成失败原因、修正策略和 `skill_updates`。
+5. `skill_store.py` 将 `skill_updates` 应用为 `learned_skills/*.md` 的新增、修改或删除，并刷新 `learned_skills/SKILL.md`。learned skill 采用聚合结构：涉及哪个能力就优化哪个文件，例如搜索失败更新 `search.md`，格式错误更新 `format.md`，通用经验更新 `memory.md`。
 
 ## 提交材料建议
 

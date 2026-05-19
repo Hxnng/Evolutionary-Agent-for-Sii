@@ -17,6 +17,9 @@ MODEL_NAME=qwen3.5-35b-a3b
 SERPER_API_KEY=你的serper key
 JINA_API_KEY=你的jina key
 SANDBOX_BASE_URL=http://127.0.0.1:8080
+ENABLE_SKILLS=1
+SKILLS_DIR=skills
+LEARNED_SKILLS_DIR=learned_skills
 ```
 
 如需搜索代理：
@@ -67,8 +70,8 @@ python -B task_runner.py \
 
 ## SimpleVQA
 
-进化版默认会注入数据集中的非答案线索（如 `atomic_fact`、`source`、类别信息）和长期记忆；基线用 `--baseline` 关闭这些增强，便于做评分要求里的对比实验。
-这些线索会先经过 `playbook.py` 的 skillbook 路由，只检索当前题需要的 3-5 条策略，例如 direct-entity、attribute-lookup、location-origin、text-ocr、medicine-science，避免把完整 playbook 塞进上下文。
+进化版默认会注入数据集中的非答案线索（如 `atomic_fact`、`source`、类别信息）并启用 skill evolution；基线用 `--baseline` 关闭这些增强，便于做评分要求里的对比实验。
+这些线索会先交给 `curator.py`。curator 是一个独立 LLM 角色：它读取题目、工具列表、`learned_skills/SKILL.md` 动态索引（首次训练前可不存在）、唯一初始 `skills/init_skill.md` 摘要，判断 generator 可能用到哪些 skill，然后生成结构化 context。context 包括题目要求、答题要点、工具调用计划，最后拼接 curator 选中的 skill 正文。reflector 训练时只写 `learned_skills/`，并采用聚合 skill 结构：`memory.md`、`search.md`、`format.md`、`tool.md` 等；第一次有效更新会自动创建 `learned_skills/SKILL.md`，之后每次修改对应文件都会刷新索引，不改 seed skill 目录。
 
 ```bash
 python -B evaluate.py \

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from dataset_fastpath import twowiki_context_packet, twowiki_fast_answer, write_fastpath_trajectory
-from playbook import twowiki_focus_block
+from dataset_context import twowiki_focus_block
 from task_runner import extract_answer, normalize_answer, run_task
 
 logger = logging.getLogger("harness.evaluate_2wiki")

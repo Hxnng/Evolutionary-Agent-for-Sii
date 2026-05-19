@@ -131,10 +131,17 @@ def twowiki_context_packet(row: dict[str, Any]) -> str:
     """Build a compact, data-derived context packet for 2Wiki."""
     triples = _evidence_triples(row)
     supporting = _supporting_sentences(row)
+    qtype = _compact(row.get("type"))
+    question = _compact(row.get("question"))
+    skill_route = _twowiki_skill_route(row, triples)
     lines = [
         "Context packet:",
         "- Use only these compact data points unless a tool is necessary.",
+        f"- Question type: {qtype or 'unknown'}",
+        f"- Skill route hint: {', '.join(skill_route) if skill_route else 'twowiki_multihop_chain'}",
     ]
+    if question:
+        lines.append(f"- Question: {question}")
     if triples:
         lines.append("- Evidence triples:")
         for subj, pred, obj in triples:
@@ -144,6 +151,23 @@ def twowiki_context_packet(row: dict[str, Any]) -> str:
         for sentence in supporting:
             lines.append(f"  * {sentence}")
     return "\n".join(lines)
+
+
+def _twowiki_skill_route(row: dict[str, Any], triples: list[tuple[str, str, str]]) -> list[str]:
+    question = _compact(row.get("question")).lower()
+    qtype = str(row.get("type") or "").lower()
+    route: list[str] = []
+    if qtype in {"compositional", "inference"}:
+        route.append("twowiki_multihop_chain")
+    if qtype in {"comparison", "bridge_comparison"} or any(
+        x in question for x in ("first", "earlier", "later", "older", "younger", "longer", "same", "both")
+    ):
+        route.append("twowiki_comparison")
+    if qtype == "bridge_comparison":
+        route.append("twowiki_bridge_comparison")
+    if any(pred.lower() in {"country", "located in", "country of citizenship", "nationality"} for _, pred, _ in triples):
+        route.append("twowiki_same_country_alias")
+    return list(dict.fromkeys(route))
 
 
 def _canonical_country(value: str) -> str:
