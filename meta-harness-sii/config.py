@@ -62,8 +62,8 @@ class DataConfig:
     wiki2_eval_size: int = 100  # 2Wiki评估条数
 
     # 分阶段评估使用的子集
-    simplevqa_subset_sizes: List[int] = None
-    wiki2_subset_sizes: List[int] = None
+    simplevqa_subset_sizes: Optional[List[int]] = None
+    wiki2_subset_sizes: Optional[List[int]] = None
 
     def __post_init__(self):
         if self.simplevqa_subset_sizes is None:
@@ -89,10 +89,10 @@ class ScoreWeights:
 @dataclass
 class MetaHarnessConfig:
     """Meta-Harness主配置"""
-    api: APIConfig = None
-    search: SearchConfig = None
-    data: DataConfig = None
-    scores: ScoreWeights = None
+    api: Optional[APIConfig] = None
+    search: Optional[SearchConfig] = None
+    data: Optional[DataConfig] = None
+    scores: Optional[ScoreWeights] = None
 
     # 目录配置
     harnesses_dir: str = "harnesses"
