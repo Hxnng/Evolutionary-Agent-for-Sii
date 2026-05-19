@@ -59,6 +59,10 @@ AGGREGATE_SKILL_IDS = {
     "simplevqa_direct_perception",
     "simplevqa_ocr_table_chart",
     "simplevqa_landmark_entity_recognition",
+    "twowiki_multihop_chain",
+    "twowiki_comparison",
+    "twowiki_bridge_comparison",
+    "twowiki_same_country_alias",
 }
 MIN_NEW_SKILL_BODY_CHARS = int(os.getenv("MIN_NEW_SKILL_BODY_CHARS", "520"))
 MIN_UPDATE_SKILL_BODY_CHARS = int(os.getenv("MIN_UPDATE_SKILL_BODY_CHARS", "420"))
@@ -170,6 +174,16 @@ def _parse_front_matter(text: str) -> tuple[dict[str, str], str]:
 
 def _format_list(values: list[str]) -> str:
     return ", ".join(str(x).strip() for x in values if str(x).strip())
+
+
+def _dataset_group_for(skill_id: str, domains: list[str] | None = None) -> str:
+    values = {str(skill_id or "").strip().lower()}
+    values.update(str(x or "").strip().lower() for x in (domains or []))
+    if any(x == "2wiki" or x.startswith("twowiki") for x in values):
+        return "2wiki"
+    if any(x == "simplevqa" or x.startswith("simplevqa") for x in values):
+        return "simplevqa"
+    return "general"
 
 
 def _clamp_confidence(value: Any, default: float = 0.65) -> float:
@@ -292,12 +306,18 @@ class SkillStore:
         self.learned_path.mkdir(parents=True, exist_ok=True)
 
     def skill_files(self) -> list[Skill]:
-        return self._dedupe_by_id(self._read_dir(self.path, source="base") + self._read_dir(self.learned_path, source="learned"))
+        return self._dedupe_by_id(
+            self._read_dir(self.path, source="base", recursive=False)
+            + self._read_dir(self.learned_path, source="learned", recursive=True)
+        )
 
-    def _read_dir(self, directory: Path, *, source: str) -> list[Skill]:
+    def _read_dir(self, directory: Path, *, source: str, recursive: bool) -> list[Skill]:
         skills: list[Skill] = []
-        for path in sorted(directory.glob("*.md")):
+        pattern = "**/*.md" if recursive else "*.md"
+        for path in sorted(directory.glob(pattern)):
             if path.name == "SKILL.md":
+                continue
+            if any(part.startswith("_") for part in path.relative_to(directory).parts[:-1]):
                 continue
             skill = self._read_skill_file(path, source=source)
             if skill:
@@ -395,7 +415,7 @@ class SkillStore:
 
     def upsert(self, skill: Skill) -> Path:
         skill.source = "learned"
-        path = self._path_for(skill.skill_id)
+        path = self._path_for(skill.skill_id, skill.domains)
         path.write_text(self._to_markdown(skill), encoding="utf-8")
         return path
 
@@ -407,7 +427,7 @@ class SkillStore:
         if not skill:
             return False
         path = Path(skill.path)
-        if path.exists() and path.parent.resolve() == self.learned_path.resolve():
+        if path.exists() and self.learned_path.resolve() in path.resolve().parents:
             path.unlink()
             self.refresh_manifest()
             return True
@@ -441,29 +461,44 @@ class SkillStore:
             "",
             "Curator-agent should read this file first to decide which learned skill files may be useful, then load only the selected skill bodies.",
             "",
+            "Learned skills are grouped by dataset/task family to avoid cross-dataset contamination:",
+            "- `simplevqa/`: visual QA, OCR, image-entity and image-to-attribute skills.",
+            "- `2wiki/`: 2WikiMultihopQA evidence-graph and comparison skills.",
+            "- `general/`: cross-dataset memory and generic harness policies.",
+            "- `_memory/`: short-term episodic traces; not long-term skill memory.",
+            "",
             "Reflector-agent should read this file first to decide which learned skill is involved in the current failure, then update that specific skill file and refresh this index.",
             "",
             "## Seed Skill",
             "",
             "- `init_skill`: General startup guidance. Stored in `../skills/init_skill.md` and used when no learned skill clearly applies.",
             "",
-            "## Learned Skills",
+            "## Learned Skills By Dataset",
             "",
         ]
         if learned:
+            grouped: dict[str, list[Skill]] = {"general": [], "simplevqa": [], "2wiki": []}
             for skill in learned:
-                details = []
-                if skill.domains:
-                    details.append("domains=" + _format_list(skill.domains[:4]))
-                specific_triggers = [
-                    trigger
-                    for trigger in skill.triggers
-                    if str(trigger or "").strip().lower() not in _GENERIC_TRIGGERS
-                ][:5]
-                if specific_triggers:
-                    details.append("triggers=" + _format_list(specific_triggers))
-                suffix = f" ({'; '.join(details)})" if details else ""
-                lines.append(f"- `{skill.skill_id}`: {skill.summary or skill.title}{suffix}")
+                grouped.setdefault(_dataset_group_for(skill.skill_id, skill.domains), []).append(skill)
+            for group in ("general", "simplevqa", "2wiki"):
+                group_skills = grouped.get(group) or []
+                if not group_skills:
+                    continue
+                lines.extend(["", f"### {group}", ""])
+                for skill in group_skills:
+                    details = []
+                    if skill.domains:
+                        details.append("domains=" + _format_list(skill.domains[:4]))
+                    specific_triggers = [
+                        trigger
+                        for trigger in skill.triggers
+                        if str(trigger or "").strip().lower() not in _GENERIC_TRIGGERS
+                    ][:5]
+                    if specific_triggers:
+                        details.append("triggers=" + _format_list(specific_triggers))
+                    suffix = f" ({'; '.join(details)})" if details else ""
+                    rel_path = Path(skill.path).resolve().relative_to(self.learned_path.resolve())
+                    lines.append(f"- `{skill.skill_id}`: {skill.summary or skill.title}{suffix}; file=`{rel_path}`")
         else:
             lines.append("- No learned skills yet.")
         text = "\n".join(lines).strip() + "\n"
@@ -471,8 +506,11 @@ class SkillStore:
             (self.learned_path / "SKILL.md").write_text(text, encoding="utf-8")
         return text
 
-    def _path_for(self, skill_id: str) -> Path:
-        return self.learned_path / f"{_slug(skill_id)}.md"
+    def _path_for(self, skill_id: str, domains: list[str] | None = None) -> Path:
+        group = _dataset_group_for(skill_id, domains)
+        directory = self.learned_path / group
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / f"{_slug(skill_id)}.md"
 
     def _next_skill_id(self, update: dict[str, Any]) -> str:
         domains = _split_csv(update.get("domains") or update.get("tags"))

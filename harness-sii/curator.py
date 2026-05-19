@@ -514,6 +514,26 @@ class CuratorAgent:
             points["evidence_plan"].append(
                 "- Treat provided atomic/source hints as current-task evidence for routing, but still answer the user's original relation rather than the hint itself."
             )
+        if profile.get("family") == "2wiki":
+            points["answering_points"].extend(
+                [
+                    "- For 2Wiki, first read the question type and skill route hint, then decide whether this is a compositional chain, direct comparison, bridge comparison, or same-country/nationality check.",
+                    "- Use evidence triples as the primary reasoning graph; supporting sentences are only for disambiguating names, dates, and aliases.",
+                ]
+            )
+            points["evidence_plan"].extend(
+                [
+                    "- Evidence priority: evidence triples first, then supporting sentences, then candidate context only if a triple is missing or ambiguous.",
+                    "- For compositional questions, follow subject --relation--> bridge --relation--> answer and return the final object.",
+                    "- For comparisons, normalize dates/numbers/countries before deciding; do not compare raw strings.",
+                ]
+            )
+            points["stop_conditions"].append(
+                "- Stop once the graph path or comparison operation yields one exact answer span supported by the packet."
+            )
+            points["answer_contract"].append(
+                "- For yes/no 2Wiki questions, answer exactly yes or no unless the prompt asks for an entity."
+            )
         if any(x in lowered for x in ("表格", "图表", "公式", "equation", "table", "chart", "price", "average", "total")):
             points["answering_points"].append(
                 "- Preserve row/column/axis/unit structure before computing; avoid doing arithmetic from a lossy text summary."
