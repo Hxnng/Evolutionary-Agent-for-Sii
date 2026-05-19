@@ -57,6 +57,8 @@ class FilesystemManager:
         """创建新的候选目录结构"""
         if not self._is_valid_id(candidate_id):
             raise ValueError(f"无效的candidate_id: {candidate_id}")
+        if parent_id is not None and not self._is_valid_id(parent_id):
+            raise ValueError(f"无效的parent_id: {parent_id}")
 
         try:
             candidate_dir = self._get_candidate_dir(candidate_id)
@@ -159,10 +161,14 @@ class FilesystemManager:
             return None
 
         metadata_file = candidate_dir / "metadata.json"
-        if metadata_file.exists():
-            with open(metadata_file, "r", encoding="utf-8") as f:
-                metadata = json.load(f)
-        else:
+        try:
+            if metadata_file.exists():
+                with open(metadata_file, "r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+            else:
+                metadata = {}
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(f"读取元数据失败，使用默认值: {e}")
             metadata = {}
 
         return CandidateInfo(
@@ -208,6 +214,8 @@ class FilesystemManager:
         """获取单个任务的轨迹"""
         if not self._is_valid_id(candidate_id):
             raise ValueError(f"无效的candidate_id: {candidate_id}")
+        if not self._is_valid_id(task_id):
+            raise ValueError(f"无效的task_id: {task_id}")
 
         try:
             trajectory_file = self._get_candidate_dir(candidate_id) / "trajectories" / f"{task_id}.jsonl"
@@ -227,15 +235,19 @@ class FilesystemManager:
         if not self._is_valid_id(candidate_id):
             raise ValueError(f"无效的candidate_id: {candidate_id}")
 
-        trajectories_dir = self._get_candidate_dir(candidate_id) / "trajectories"
-        trajectories = {}
+        try:
+            trajectories_dir = self._get_candidate_dir(candidate_id) / "trajectories"
+            trajectories = {}
 
-        if trajectories_dir.exists():
-            for trajectory_file in trajectories_dir.glob("*.jsonl"):
-                task_id = trajectory_file.stem
-                trajectories[task_id] = self.get_trajectory(candidate_id, task_id)
+            if trajectories_dir.exists():
+                for trajectory_file in trajectories_dir.glob("*.jsonl"):
+                    task_id = trajectory_file.stem
+                    trajectories[task_id] = self.get_trajectory(candidate_id, task_id)
 
-        return trajectories
+            return trajectories
+        except (OSError, RuntimeError) as e:
+            logger.error(f"读取所有轨迹失败: {e}")
+            return {}
 
     def get_reasoning(self, candidate_id: str) -> Optional[str]:
         """获取proposer的推理过程"""
@@ -312,8 +324,12 @@ class FilesystemManager:
 
     def clear_all(self):
         """清空所有候选"""
-        if self.base_dir.exists():
-            logger.warning(f"清空所有候选目录: {self.base_dir}")
-            shutil.rmtree(self.base_dir)
-            self.base_dir.mkdir(parents=True, exist_ok=True)
-            logger.info("所有候选目录已清空")
+        try:
+            if self.base_dir.exists():
+                logger.warning(f"清空所有候选目录: {self.base_dir}")
+                shutil.rmtree(self.base_dir)
+                self.base_dir.mkdir(parents=True, exist_ok=True)
+                logger.info("所有候选目录已清空")
+        except OSError as e:
+            logger.error(f"清空所有候选目录失败: {e}")
+            raise RuntimeError(f"清空所有候选目录失败: {e}")
