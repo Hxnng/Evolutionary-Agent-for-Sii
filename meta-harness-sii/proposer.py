@@ -64,35 +64,95 @@ class Proposer:
                 context_parts.append(f"- 分数：{json.dumps(summary.get('scores', {}), ensure_ascii=False)}")
                 context_parts.append("")
 
-        # 添加表现最好的候选的详细信息
+        # 按准确率排序所有候选
         if candidates:
-            # 按准确率排序
             candidates_with_scores = []
+            candidates_without_scores = []
             for candidate in candidates:
                 scores = self.filesystem.get_scores(candidate.candidate_id)
                 if scores and "accuracy" in scores:
-                    candidates_with_scores.append((candidate, scores["accuracy"]))
+                    candidates_with_scores.append((candidate, scores))
+                else:
+                    candidates_without_scores.append(candidate)
 
             if candidates_with_scores:
-                candidates_with_scores.sort(key=lambda x: x[1], reverse=True)
-                best_candidate, best_accuracy = candidates_with_scores[0]
+                candidates_with_scores.sort(key=lambda x: x[1]["accuracy"], reverse=True)
+                best_candidate, best_scores = candidates_with_scores[0]
+                worst_candidate, worst_scores = candidates_with_scores[-1]
 
+                # 展示表现最好的候选的详细信息
                 context_parts.append(f"\n## 表现最好的候选：{best_candidate.candidate_id}\n")
-                context_parts.append(f"准确率：{best_accuracy:.3f}\n")
+                context_parts.append(f"分数：{json.dumps(best_scores, ensure_ascii=False)}\n")
 
-                # 添加代码
                 code = self.filesystem.get_harness_code(best_candidate.candidate_id)
                 if code:
                     context_parts.append("### 代码\n```python")
                     context_parts.append(code)
                     context_parts.append("```\n")
 
-                # 添加推理过程
                 reasoning = self.filesystem.get_reasoning(best_candidate.candidate_id)
                 if reasoning:
                     context_parts.append("### 推理过程\n")
                     context_parts.append(reasoning)
                     context_parts.append("")
+
+                # 读取表现最好的候选的轨迹数据（采样展示）
+                best_trajectories = self.filesystem.get_all_trajectories(best_candidate.candidate_id)
+                if best_trajectories:
+                    context_parts.append("### 轨迹数据（采样）\n")
+                    sample_count = 0
+                    for task_id, trajectory in best_trajectories.items():
+                        if sample_count >= 3:
+                            context_parts.append(f"（共 {len(best_trajectories)} 条轨迹，仅展示前3条）\n")
+                            break
+                        context_parts.append(f"**任务 {task_id}**：\n```json")
+                        # 截断过长的轨迹，避免上下文爆炸
+                        trajectory_str = json.dumps(trajectory[:10], ensure_ascii=False, indent=2)
+                        if len(trajectory_str) > 3000:
+                            trajectory_str = trajectory_str[:3000] + "\n... (截断)"
+                        context_parts.append(trajectory_str)
+                        context_parts.append("```\n")
+                        sample_count += 1
+
+                # 展示表现最差的候选的详细信息（帮助分析失败原因）
+                if len(candidates_with_scores) > 1 and worst_candidate.candidate_id != best_candidate.candidate_id:
+                    context_parts.append(f"\n## 表现最差的候选：{worst_candidate.candidate_id}\n")
+                    context_parts.append(f"分数：{json.dumps(worst_scores, ensure_ascii=False)}\n")
+
+                    worst_code = self.filesystem.get_harness_code(worst_candidate.candidate_id)
+                    if worst_code:
+                        context_parts.append("### 代码\n```python")
+                        context_parts.append(worst_code)
+                        context_parts.append("```\n")
+
+                    worst_reasoning = self.filesystem.get_reasoning(worst_candidate.candidate_id)
+                    if worst_reasoning:
+                        context_parts.append("### 推理过程\n")
+                        context_parts.append(worst_reasoning)
+                        context_parts.append("")
+
+                    # 读取表现最差的候选的轨迹数据（采样展示）
+                    worst_trajectories = self.filesystem.get_all_trajectories(worst_candidate.candidate_id)
+                    if worst_trajectories:
+                        context_parts.append("### 轨迹数据（采样）\n")
+                        sample_count = 0
+                        for task_id, trajectory in worst_trajectories.items():
+                            if sample_count >= 3:
+                                context_parts.append(f"（共 {len(worst_trajectories)} 条轨迹，仅展示前3条）\n")
+                                break
+                            context_parts.append(f"**任务 {task_id}**：\n```json")
+                            trajectory_str = json.dumps(trajectory[:10], ensure_ascii=False, indent=2)
+                            if len(trajectory_str) > 3000:
+                                trajectory_str = trajectory_str[:3000] + "\n... (截断)"
+                            context_parts.append(trajectory_str)
+                            context_parts.append("```\n")
+                            sample_count += 1
+
+            # 展示无分数的候选（可能是执行失败的）
+            if candidates_without_scores:
+                context_parts.append("\n## 未完成评估的候选（可能执行失败）\n")
+                for candidate in candidates_without_scores:
+                    context_parts.append(f"- **{candidate.candidate_id}**：{candidate.description}")
 
         return "\n".join(context_parts)
 
@@ -150,7 +210,7 @@ class Proposer:
                     {"role": "system", "content": "你是一个harness优化专家，擅长分析代码和执行轨迹，提出改进方案。"},
                     {"role": "user", "content": prompt}
                 ],
-                max_completion_tokens=4096,
+                max_completion_tokens=16384,
                 temperature=0.8,
                 top_p=0.95
             )
@@ -159,6 +219,28 @@ class Proposer:
 
             # 解析响应
             candidates = self._parse_response(response_text, num_candidates)
+
+            # 将候选代码和推理过程存储到文件系统
+            for candidate in candidates:
+                candidate_id = candidate.get("id", "")
+                if not candidate_id:
+                    continue
+                try:
+                    # 确保候选目录存在
+                    self.filesystem.create_candidate(
+                        candidate_id=candidate_id,
+                        iteration=iteration,
+                        description=candidate.get("description", "")
+                    )
+                    # 存储代码
+                    if "code" in candidate:
+                        self.filesystem.store_harness_code(candidate_id, candidate["code"])
+                    # 存储推理过程
+                    if "reasoning" in candidate:
+                        self.filesystem.store_reasoning(candidate_id, candidate["reasoning"])
+                    self.logger.info(f"Stored candidate {candidate_id} to filesystem")
+                except Exception as store_err:
+                    self.logger.error(f"Failed to store candidate {candidate_id}: {store_err}")
 
             self.logger.info(f"Proposed {len(candidates)} candidates")
             return candidates
