@@ -1,50 +1,54 @@
 # Evolutionary Agent Harness for SII
 
-这是一个面向“自进化的任务求解智能体”课题的最小可运行 Harness。当前版本已经按本机调通路径收敛为：
+这是面向“自进化的任务求解智能体”课题的 harness 实现。当前版本已经接入百炼 Qwen、Serper/Jina 搜索、可选 search-proxy、浏览器沙盒、轨迹记录、失败反思、长期记忆、SimpleVQA/2Wiki/benchmark 批量评测与 metrics 汇总。
 
-- 模型：阿里云百炼 OpenAI-compatible API，默认 `qwen3.5-35b-a3b`，流式开启 thinking。
-- 搜索：只使用 `SERPER_API_KEY` + `JINA_API_KEY` 直连。
-- 浏览器：优先使用 `browser-service` 沙盒；未启动时，`browser_navigate` 会用 HTTP fallback 抓页面文本。
-- 进化闭环：失败反思、长期记忆、后续任务记忆注入。
-- 评测产物：预测 JSONL 与逐任务轨迹 JSONL。
-
-## 目录
+## 目录结构
 
 ```text
+browser-service/             # Playwright 浏览器沙盒服务
 harness-sii/
-  task_runner.py          # ReAct 主循环、百炼调用、工具分发、轨迹、反思/记忆闭环
-  tools/search_tool.py    # Serper 文搜文、Serper Lens 图搜文、Jina 正文抽取
-  tools/browser_tool.py   # 浏览器沙盒工具；服务不可用时可 HTTP fallback
-  trajectory.py           # JSONL 轨迹写入/读取
-  reflection.py           # 失败反思模块
-  memory.py               # 长期记忆 JSONL 检索与写入
-  evaluate.py             # SimpleVQA / 2Wiki 风格批量评测入口
-browser-service/          # 官方浏览器沙盒服务
+  task_runner.py             # 单任务 ReAct 主循环
+  trajectory.py              # JSONL 轨迹记录与回放
+  memory.py                  # 长期记忆检索与写入
+  reflection.py              # 失败反思
+  evaluate.py                # SimpleVQA JSON/JSONL 评测
+  evaluate_2wiki.py          # 2Wiki parquet/JSON/JSONL 评测
+  evaluate_benchmark.py      # benchmark.csv 评测
+  metris.py                  # 预测与轨迹指标汇总、baseline/evolved 对比
+  tools/search_tool.py       # Serper/Jina 搜索，支持 direct/proxy
+  tools/browser_tool.py      # 浏览器工具，支持 HTTP fallback
+  data/                      # 本地数据集，已被 .gitignore 忽略
 ```
 
-## 1. 环境安装
+## 环境安装
 
 推荐使用 miniconda：
 
 ```bash
 conda create -n sii-harness python=3.11 -y
 conda activate sii-harness
-cd ./harness-sii
+cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii
 pip install -r requirements.txt
 ```
 
-如果要启用浏览器沙盒，还需要安装 browser-service 依赖。第一次运行 `browser-service/run.sh` 会自动安装依赖和 Playwright Chromium。
-
-## 2. 配置 `.env`
-
-复制模板并填写 key：
+浏览器服务第一次运行会自动安装自己的依赖和 Playwright Chromium：
 
 ```bash
-cd ./Evolutionary-Agent-for-Sii
+conda activate sii-harness
+cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/browser-service
+bash run.sh
+```
+
+## 配置
+
+复制模板：
+
+```bash
+cd /Users/a1234/sii/Evolutionary-Agent-for-Sii
 cp .env.example harness-sii/.env
 ```
 
-编辑 `harness-sii/.env`：
+最小配置：
 
 ```dotenv
 DASHSCOPE_API_KEY=你的百炼key
@@ -61,61 +65,89 @@ ENABLE_REFLECTION=1
 ENABLE_MEMORY=1
 ```
 
-注意：`harness-sii/.env` 含真实 key，不要提交到 Git。项目的 `.gitignore` 已忽略 `.env`。
+`harness-sii/.env` 含真实 key，不要提交。项目已通过 `.gitignore` 忽略 `.env`、`data/`、`runs/`、`trajectories/`、checkpoint 等运行产物。
 
-## 3. 单工具自检
+## 搜索模式
 
-先测搜索工具，确认 Serper/Jina 可用：
+### Direct 模式，默认推荐
+
+Direct 模式由 `harness-sii/tools/search_tool.py` 直接访问 Serper 和 Jina：
 
 ```bash
-cd ./Evolutionary-Agent-for-Sii/harness-sii
+cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii
 python -B tools/search_tool.py text "上海创智学院 谢源老师 代表作" --top-k 1 --no-fetch
 ```
 
-正常输出应包含：
+正常会看到：
 
 ```text
 [mode] direct
 ```
 
-并返回至少一条搜索结果。
+### Proxy 模式，可选
 
-## 4. 启动浏览器沙盒
+`search-proxy` 适合“跑 agent 的机器不能直连公网，但另一台 CPU 机器能访问公网”的场景。代理服务本身是可用的，当前 harness 已恢复可选接入：只要设置 `SEARCH_PROXY_URL`，搜索工具就会优先走代理。
 
-正式评测建议启动浏览器服务。另开一个终端：
+在有公网的机器上启动代理：
 
 ```bash
-conda activate sii-harness
-cd ./Evolutionary-Agent-for-Sii/browser-service
+cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii/search-proxy
+export SERPER_API_KEY=你的serper key
+export JINA_API_KEY=你的jina key
+export PROXY_API_TOKEN=一个随机token   # 可选但推荐
 bash run.sh
 ```
 
-成功时会看到：
+健康检查：
 
-```text
-Chromium runtime OK.
-Starting browser service on 0.0.0.0:8080
-Uvicorn running on http://0.0.0.0:8080
+```bash
+curl http://127.0.0.1:8090/health
 ```
 
-再开一个终端检查：
+在 agent 运行环境的 `harness-sii/.env` 中设置：
+
+```dotenv
+SEARCH_PROXY_URL=http://127.0.0.1:8090
+SEARCH_PROXY_TOKEN=一个随机token
+SEARCH_PROXY_FALLBACK=1
+```
+
+再测：
+
+```bash
+python -B tools/search_tool.py text "上海创智学院 谢源老师 代表作" --top-k 1 --no-fetch
+```
+
+正常会看到：
+
+```text
+[mode] proxy
+```
+
+如果 proxy 配错或暂时不可用，默认 `SEARCH_PROXY_FALLBACK=1` 会回退 direct 模式，避免整批评测直接中断。若希望代理失败立即报错，可设为 `SEARCH_PROXY_FALLBACK=0`。
+
+## 浏览器服务
+
+另开终端启动：
+
+```bash
+conda activate sii-harness
+cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/browser-service
+bash run.sh
+```
+
+检查：
 
 ```bash
 curl http://127.0.0.1:8080/health
 ```
 
-应返回类似：
+如果 `www.sii.edu.cn` 等域名 DNS 失败，`browser_navigate` 会返回结构化失败，harness 会继续用搜索、Jina 或其他来源完成任务，不会再把服务端打成 500。
 
-```json
-{"status":"ok","browser_running":true,"sessions":0}
-```
-
-如果暂时不启动 browser-service，Agent 仍可通过 HTTP fallback 抓取普通网页文本，但点击、输入、多标签等完整浏览器能力需要服务运行。
-
-## 5. 完整 Agent Smoke Test
+## 单任务运行
 
 ```bash
-cd ./Evolutionary-Agent-for-Sii/harness-sii
+cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii
 python -B task_runner.py \
   --instruction "请查询上海创智学院谢源老师的代表作。" \
   --task-id smoke_001 \
@@ -123,70 +155,37 @@ python -B task_runner.py \
   --max-steps 8
 ```
 
-检查点：
+轨迹默认保留历史运行。同一个 `--task-id` 第一次写：
 
-- 日志出现 `tool_call: search_text(...)`。
-- 搜索模式为 `search_text(direct)`。
-- 如果 browser-service 已启动，浏览器工具应正常连接 `127.0.0.1:8080`。
-- 最终输出包含 `<answer>...</answer>`。
-- 轨迹写入 `harness-sii/trajectories/smoke_001.jsonl`；如果该文件已存在，会自动写入带时间戳的新文件以保留旧轨迹。需要强制覆盖时加 `--overwrite-traj`。
-
-## 6. 图片任务示例
-
-```bash
-python -B task_runner.py \
-  --instruction "请识别图中的城市，并查询该城市所在国家的首都名称。" \
-  --image ./123.jpg \
-  --image-url "https://example.com/123.jpg" \
-  --task-id simplevqa_001 \
-  --traj-dir trajectories \
-  --max-steps 8
+```text
+trajectories/smoke_001.jsonl
 ```
 
-本地图像会以 base64 传给多模态模型；图搜文工具需要公网图片 URL 或可上传的本地图片。
+再次运行会写：
 
-## 7. 批量评测
-
-批量入口：
-
-- `harness-sii/evaluate.py`：SimpleVQA JSON/JSONL。
-- `harness-sii/evaluate_2wiki.py`：2WikiMultihopQA parquet/JSON/JSONL。
-- `harness-sii/evaluate_benchmark.py`：闭源 benchmark CSV，列名 `problem,image,answer`。
-- `harness-sii/metris.py`：预测文件与轨迹目录的指标汇总、baseline/evolved 对比。
-
-支持字段名：
-
-- 问题：`instruction`、`question`、`query`、`input`、`prompt`
-- 答案：`answer`、`gold`、`label`、`target`
-- 图片：`image`、`image_path`、`image_url`、`img`
-
-无进化基线：
-
-```bash
-cd ./Evolutionary-Agent-for-Sii/harness-sii
-python -B evaluate.py \
-  --dataset data/simpleVQA/simpleVQA_final_modified.json \
-  --image-root data/simpleVQA/simpleVQA_datasets \
-  --output runs/baseline/simplevqa_predictions.jsonl \
-  --metrics-output runs/baseline/simplevqa_metrics.json \
-  --traj-dir runs/baseline/simplevqa_trajectories \
-  --split-name simplevqa \
-  --baseline
+```text
+trajectories/smoke_001_YYYYMMDD_HHMMSS.jsonl
 ```
 
-带反思和记忆的最终版：
+只有显式加 `--overwrite-traj` 才会覆盖 `<task-id>.jsonl`。
+
+## 数据集评测
+
+### SimpleVQA
 
 ```bash
+cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii
 python -B evaluate.py \
   --dataset data/simpleVQA/simpleVQA_final_modified.json \
   --image-root data/simpleVQA/simpleVQA_datasets \
   --output runs/evolved/simplevqa_predictions.jsonl \
   --metrics-output runs/evolved/simplevqa_metrics.json \
   --traj-dir runs/evolved/simplevqa_trajectories \
-  --split-name simplevqa
+  --split-name simplevqa \
+  --limit 20
 ```
 
-2Wiki：
+### 2WikiMultihopQA
 
 ```bash
 python -B evaluate_2wiki.py \
@@ -195,10 +194,21 @@ python -B evaluate_2wiki.py \
   --output runs/evolved/2wiki_predictions.jsonl \
   --metrics-output runs/evolved/2wiki_metrics.json \
   --traj-dir runs/evolved/2wiki_trajectories \
-  --split-name 2wiki
+  --split-name 2wiki \
+  --limit 20
 ```
 
-benchmark.csv：
+说明：本地 `2wiki` 的 validation/test parquet 可读；train shard 中若有不可读文件，脚本默认会跳过。需要严格失败则加 `--strict`。
+
+### benchmark.csv
+
+闭源 benchmark 若为 CSV，请使用列名：
+
+```text
+problem,image,answer
+```
+
+运行：
 
 ```bash
 python -B evaluate_benchmark.py \
@@ -209,15 +219,76 @@ python -B evaluate_benchmark.py \
   --split-name benchmark
 ```
 
-输出预测 JSONL 格式：
+## 输出格式
+
+预测 JSONL 每行包含核心字段：
 
 ```json
-{"index": 0, "task_id": "simplevqa_0", "instruction": "...", "image": "", "answer": "...", "pred": "...", "success": true, "steps": 4, "trajectory_path": "..."}
+{
+  "index": 0,
+  "task_id": "simplevqa_0",
+  "instruction": "...",
+  "image": "CCSimpleQA/0.jpg",
+  "answer": "...",
+  "pred": "...",
+  "success": true,
+  "steps": 4,
+  "trajectory_path": "runs/evolved/simplevqa_trajectories/simplevqa_0.jsonl"
+}
 ```
 
-每个任务的完整轨迹单独保存为 JSONL，包含 system/user/assistant/tool/reflection 等记录。`--metrics-output` 会额外写出总样本数、正确数、准确率、耗时和运行模式，方便 baseline/evolved 对比。
+轨迹 JSONL 保存完整 system/user/assistant/tool/reflection 过程，可用于复盘和评分。
 
-## 8. 反思与记忆
+## Baseline 与 Evolved 对比
+
+无记忆/反思注入 baseline：
+
+```bash
+python -B evaluate.py \
+  --dataset data/simpleVQA/simpleVQA_final_modified.json \
+  --image-root data/simpleVQA/simpleVQA_datasets \
+  --output runs/baseline/simplevqa_predictions.jsonl \
+  --metrics-output runs/baseline/simplevqa_metrics.json \
+  --traj-dir runs/baseline/simplevqa_trajectories \
+  --split-name simplevqa \
+  --baseline \
+  --limit 50
+```
+
+带反思/记忆 evolved：
+
+```bash
+python -B evaluate.py \
+  --dataset data/simpleVQA/simpleVQA_final_modified.json \
+  --image-root data/simpleVQA/simpleVQA_datasets \
+  --output runs/evolved/simplevqa_predictions.jsonl \
+  --metrics-output runs/evolved/simplevqa_metrics.json \
+  --traj-dir runs/evolved/simplevqa_trajectories \
+  --split-name simplevqa \
+  --limit 50
+```
+
+汇总单次结果：
+
+```bash
+python -B metris.py \
+  --pred runs/evolved/simplevqa_predictions.jsonl \
+  --traj-dir runs/evolved/simplevqa_trajectories \
+  --output runs/evolved/simplevqa_report.json
+```
+
+对比 baseline/evolved：
+
+```bash
+python -B metris.py \
+  --baseline-pred runs/baseline/simplevqa_predictions.jsonl \
+  --baseline-traj runs/baseline/simplevqa_trajectories \
+  --evolved-pred runs/evolved/simplevqa_predictions.jsonl \
+  --evolved-traj runs/evolved/simplevqa_trajectories \
+  --output runs/simplevqa_compare_report.json
+```
+
+## 自进化机制
 
 默认开启：
 
@@ -226,75 +297,59 @@ ENABLE_REFLECTION=1
 ENABLE_MEMORY=1
 MEMORY_PATH=memory/long_term_memory.jsonl
 RECORD_SUCCESS_MEMORY=1
+RECORD_UNGRADED_SUCCESS_MEMORY=0
 ```
 
-机制：
+流程：
 
-1. 每个任务先运行 ReAct 工具循环。
-2. 若失败，`reflection.py` 分析失败原因和修正策略。
-3. `memory.py` 将经验写入长期 JSONL。
-4. 后续任务会检索相关记忆并注入 system prompt。
+1. `task_runner.py` 执行 ReAct 工具循环。
+2. 失败时 `reflection.py` 生成失败原因、修正策略、可复用经验。
+3. `memory.py` 写入长期记忆。
+4. 后续任务检索相关记忆注入 prompt，但记忆只作为策略建议，不作为事实证据。
 
-如只想记录失败经验：
+## 提交材料建议
 
-```dotenv
-RECORD_SUCCESS_MEMORY=0
+建议保留以下产物：
+
+```text
+runs/baseline/*_predictions.jsonl
+runs/baseline/*_metrics.json
+runs/baseline/*_trajectories/*.jsonl
+runs/evolved/*_predictions.jsonl
+runs/evolved/*_metrics.json
+runs/evolved/*_trajectories/*.jsonl
+runs/*_compare_report.json
 ```
 
-## 9. 提交材料对应关系
+代码提交只包含 harness 和服务代码，不提交 `.env`、`data/`、`runs/`、`trajectories/`。
 
-课题要求的材料可以从以下位置生成：
-
-- 原始结果 JSONL：`runs/baseline/*_predictions.jsonl`
-- 最终结果 JSONL：`runs/evolved/*_predictions.jsonl`
-- 所有轨迹 JSONL：`runs/*/*_trajectories/*.jsonl`
-- 系统整体代码：本仓库
-- 打榜结果 JSONL：使用同一 `evaluate.py` 入口替换为闭源 benchmark 数据
-
-正式提交前建议检查：
-
-```bash
-find runs -name '*predictions.jsonl' -print
-find runs -name '*.jsonl' | head
-python -B -m py_compile harness-sii/*.py harness-sii/tools/*.py
-```
-
-## 10. 常见问题
+## 常见问题
 
 ### `SERPER_API_KEY not set`
 
-确认 `harness-sii/.env` 中填写了 `SERPER_API_KEY`，并从 `harness-sii` 目录运行命令。`tools/search_tool.py` 会自动读取该文件。
+确认 `harness-sii/.env` 中填写了 `SERPER_API_KEY`，并从 `harness-sii` 目录运行。
+
+### `parameter.enable_thinking only support stream call`
+
+DashScope 开启 `enable_thinking` 时必须 `stream=True`。当前 `task_runner.py` 已做流式聚合，不需要手动改。
+
+### `Invalid type for messages.[0].content`
+
+通常是旧轨迹污染或 message content 不是字符串/list。当前轨迹读取会序列化 dict，并且同 task-id 默认保留新文件，减少污染。
 
 ### `browser-service health check failed`
 
-说明浏览器服务没有启动。运行：
+浏览器服务没启动。运行：
 
 ```bash
-cd ./Evolutionary-Agent-for-Sii/browser-service
+cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/browser-service
 bash run.sh
 ```
 
-### `permission denied: ./run.sh`
+### `net::ERR_NAME_NOT_RESOLVED`
 
-脚本没有执行权限时使用：
+目标域名 DNS 解析失败，不代表 harness 崩了。浏览器工具会返回 `ok=false`，agent 会换搜索或其他证据来源。
 
-```bash
-bash run.sh
-```
+### 2Wiki parquet 有 warning
 
-### Playwright Chromium 启动失败
-
-重新安装浏览器：
-
-```bash
-conda activate sii-harness
-python -m playwright install chromium
-```
-
-### 百炼报 `enable_thinking only support stream call`
-
-当前 `task_runner.py` 已使用 `stream=True` 聚合百炼输出。不要关闭 `ENABLE_THINKING=1`，除非你切到不支持 thinking 的模型；需要关闭时设置：
-
-```dotenv
-ENABLE_THINKING=0
-```
+macOS sandbox 下 pyarrow 可能打印 `sysctlbyname failed`，通常不影响读取。若 train shard 损坏，默认会跳过；validation/test 已验证可读。

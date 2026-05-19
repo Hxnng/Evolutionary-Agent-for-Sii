@@ -1,6 +1,6 @@
-# Harness SII
+# Harness SII Quickstart
 
-本目录是考核主体实现。推荐从仓库根目录 README 开始阅读；这里保留最短测试流程。
+主说明见仓库根目录 [README.md](../README.md)。本文件只保留最常用命令。
 
 ## 配置
 
@@ -9,23 +9,34 @@ cd /Users/a1234/sii/Evolutionary-Agent-for-Sii
 cp .env.example harness-sii/.env
 ```
 
-编辑 `harness-sii/.env`，填写：
+填写 `harness-sii/.env`：
 
 ```dotenv
 DASHSCOPE_API_KEY=你的百炼key
+MODEL_NAME=qwen3.5-35b-a3b
 SERPER_API_KEY=你的serper key
 JINA_API_KEY=你的jina key
-MODEL_NAME=qwen3.5-35b-a3b
+SANDBOX_BASE_URL=http://127.0.0.1:8080
 ```
 
-## 搜索自检
+如需搜索代理：
+
+```dotenv
+SEARCH_PROXY_URL=http://127.0.0.1:8090
+SEARCH_PROXY_TOKEN=
+SEARCH_PROXY_FALLBACK=1
+```
+
+## 自检
 
 ```bash
 cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii
 python -B tools/search_tool.py text "上海创智学院 谢源老师 代表作" --top-k 1 --no-fetch
 ```
 
-## 启动浏览器服务
+输出 `[mode] direct` 表示直连；输出 `[mode] proxy` 表示正在走 `search-proxy`。
+
+## 浏览器服务
 
 另开终端：
 
@@ -35,13 +46,13 @@ cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/browser-service
 bash run.sh
 ```
 
-健康检查：
+检查：
 
 ```bash
 curl http://127.0.0.1:8080/health
 ```
 
-## Agent Smoke Test
+## 单任务
 
 ```bash
 cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii
@@ -52,14 +63,9 @@ python -B task_runner.py \
   --max-steps 8
 ```
 
-轨迹文件按 `--task-id` 命名，并默认保留历史运行。若
-`trajectories/smoke_001.jsonl` 已存在，新运行会自动写入类似
-`trajectories/smoke_001_20260519_001234.jsonl` 的文件。只有显式加
-`--overwrite-traj` 时才会覆盖 `<task-id>.jsonl`。
+轨迹默认保留历史运行；重复 `task-id` 会生成带时间戳的新 JSONL。需要覆盖时加 `--overwrite-traj`。
 
-## Benchmark 输出
-
-### SimpleVQA
+## SimpleVQA
 
 ```bash
 python -B evaluate.py \
@@ -72,7 +78,7 @@ python -B evaluate.py \
   --limit 20
 ```
 
-### 2WikiMultihopQA
+## 2Wiki
 
 ```bash
 python -B evaluate_2wiki.py \
@@ -85,9 +91,7 @@ python -B evaluate_2wiki.py \
   --limit 20
 ```
 
-### benchmark.csv
-
-如果后续 benchmark 数据是 CSV，且列名为 `problem,image,answer`：
+## benchmark.csv
 
 ```bash
 python -B evaluate_benchmark.py \
@@ -98,7 +102,7 @@ python -B evaluate_benchmark.py \
   --split-name benchmark
 ```
 
-### 汇总指标
+## Metrics
 
 ```bash
 python -B metris.py \
@@ -106,18 +110,3 @@ python -B metris.py \
   --traj-dir runs/evolved/simplevqa_trajectories \
   --output runs/evolved/simplevqa_report.json
 ```
-
-预测 JSONL 每行包含：
-
-```json
-{"index": 0, "task_id": "simplevqa_0", "instruction": "...", "image": "", "answer": "...", "pred": "...", "success": true, "steps": 4, "trajectory_path": "..."}
-```
-
-## 主要文件
-
-- `task_runner.py`：ReAct 主循环、百炼流式调用、工具分发、轨迹、反思/记忆闭环。
-- `tools/search_tool.py`：Serper 文搜文、Serper Lens 图搜文、Jina 正文抽取。
-- `tools/browser_tool.py`：浏览器沙盒工具；服务不可用时有 HTTP fallback。
-- `reflection.py`：失败反思。
-- `memory.py`：长期记忆 JSONL。
-- `evaluate.py`：SimpleVQA / 2Wiki 风格批量评测。

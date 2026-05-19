@@ -1,9 +1,10 @@
 """
-Web search tool — direct Serper + Jina mode.
+Web search tool — Serper + Jina, with optional search-proxy mode.
 
-Direct mode is the only enabled mode in this project: the tool talks directly
-to Serper / Jina / 0x0 from this process, using `SERPER_API_KEY` and
-`JINA_API_KEY` from `.env`.
+Default direct mode talks to Serper / Jina / 0x0 from this process, using
+`SERPER_API_KEY` and `JINA_API_KEY` from `.env`.  If `SEARCH_PROXY_URL` is set,
+the tool calls a running `search-proxy` service instead; this is useful when
+the agent host cannot reach the public internet but another CPU host can.
 
 The two public tool functions keep identical signatures and return shapes
 so the LLM tool schema does not change between modes::
@@ -57,6 +58,9 @@ logger = logging.getLogger("harness.tools.search")
 SERPER_API_KEY      = os.getenv("SERPER_API_KEY", "")
 JINA_API_KEY        = os.getenv("JINA_API_KEY", "")
 IMAGE_UPLOADER      = os.getenv("IMAGE_UPLOADER", "0x0")
+SEARCH_PROXY_URL    = os.getenv("SEARCH_PROXY_URL", "").rstrip("/")
+SEARCH_PROXY_TOKEN  = os.getenv("SEARCH_PROXY_TOKEN", "") or os.getenv("PROXY_API_TOKEN", "")
+SEARCH_PROXY_FALLBACK = os.getenv("SEARCH_PROXY_FALLBACK", "1") == "1"
 
 SERPER_SEARCH_URL   = "https://google.serper.dev/search"
 SERPER_LENS_URL     = "https://google.serper.dev/lens"
@@ -64,6 +68,79 @@ JINA_READER_BASE    = "https://r.jina.ai/"
 
 DEFAULT_TIMEOUT     = 30
 JINA_TIMEOUT        = 45
+
+
+def _search_mode() -> str:
+    return "proxy" if SEARCH_PROXY_URL else "direct"
+
+
+# ---------------------------------------------------------------------------
+# Proxy-mode helpers
+# ---------------------------------------------------------------------------
+def _proxy_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if SEARCH_PROXY_TOKEN:
+        headers["Authorization"] = f"Bearer {SEARCH_PROXY_TOKEN}"
+    return headers
+
+
+def _proxy_post(path: str, payload: dict, timeout: float = DEFAULT_TIMEOUT) -> dict:
+    if not SEARCH_PROXY_URL:
+        raise RuntimeError("SEARCH_PROXY_URL not set")
+    resp = requests.post(
+        f"{SEARCH_PROXY_URL}{path}",
+        json=payload,
+        headers=_proxy_headers(),
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("ok") is False:
+        raise RuntimeError(data.get("error") or f"proxy returned ok=false: {data}")
+    return data
+
+
+def _proxy_upload_local_image(path: Path) -> str:
+    if not SEARCH_PROXY_URL:
+        raise RuntimeError("SEARCH_PROXY_URL not set")
+    if not path.exists():
+        raise FileNotFoundError(path)
+    headers = {}
+    if SEARCH_PROXY_TOKEN:
+        headers["Authorization"] = f"Bearer {SEARCH_PROXY_TOKEN}"
+    mime, _ = mimetypes.guess_type(str(path))
+    mime = mime or "application/octet-stream"
+    with path.open("rb") as fh:
+        resp = requests.post(
+            f"{SEARCH_PROXY_URL}/upload_image",
+            files={"file": (path.name, fh, mime)},
+            data={"filename": path.name},
+            headers=headers,
+            timeout=DEFAULT_TIMEOUT,
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get("ok"):
+        raise RuntimeError(data.get("error") or f"proxy upload failed: {data}")
+    return str(data.get("url") or "")
+
+
+def _proxy_search_text(query: str, top_k: int, fetch: bool, max_chars: int) -> list[dict]:
+    data = _proxy_post(
+        "/search/text",
+        {"query": query, "top_k": top_k, "fetch": fetch, "max_chars": max_chars},
+        timeout=max(DEFAULT_TIMEOUT, JINA_TIMEOUT if fetch else DEFAULT_TIMEOUT),
+    )
+    return list(data.get("results") or [])
+
+
+def _proxy_search_image(image_url: str, top_k: int, fetch: bool, max_chars: int) -> list[dict]:
+    data = _proxy_post(
+        "/search/image",
+        {"image_url": image_url, "top_k": top_k, "fetch": fetch, "max_chars": max_chars},
+        timeout=max(DEFAULT_TIMEOUT, JINA_TIMEOUT if fetch else DEFAULT_TIMEOUT),
+    )
+    return list(data.get("results") or [])
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +300,17 @@ def _resolve_image_to_url_direct(image: str) -> str:
     )
 
 
+def _resolve_image_to_url_proxy(image: str) -> str:
+    if image.startswith("http://") or image.startswith("https://"):
+        return image
+    p = Path(image).expanduser()
+    if p.exists() and p.is_file():
+        return _proxy_upload_local_image(p)
+    raise ValueError(
+        f"search_image: {image!r} is neither an http(s) URL nor an existing local file."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public tools
 # ---------------------------------------------------------------------------
@@ -240,8 +328,16 @@ def search_text(
         return []
     top_k = max(1, min(int(top_k), 10))
 
-    logger.info("search_text(direct) q=%r top_k=%d fetch=%s",
-                query, top_k, fetch)
+    logger.info("search_text(%s) q=%r top_k=%d fetch=%s",
+                _search_mode(), query, top_k, fetch)
+    if SEARCH_PROXY_URL:
+        try:
+            return _proxy_search_text(query, top_k, fetch, int(max_chars))
+        except Exception as exc:  # noqa: BLE001
+            if not SEARCH_PROXY_FALLBACK:
+                raise
+            logger.warning("search proxy failed; falling back to direct mode: %s", exc)
+
     if not SERPER_API_KEY:
         logger.warning("SERPER_API_KEY not set; using DuckDuckGo HTML fallback")
         return _duckduckgo_search(query, top_k, fetch, int(max_chars))
@@ -279,6 +375,17 @@ def search_image(
     if not image or not image.strip():
         raise ValueError("search_image requires a non-empty `image` argument.")
     top_k = max(1, min(int(top_k), 10))
+
+    logger.info("search_image(%s) image=%s top_k=%d fetch=%s",
+                _search_mode(), image[:120], top_k, fetch)
+    if SEARCH_PROXY_URL:
+        try:
+            image_url = _resolve_image_to_url_proxy(image.strip())
+            return _proxy_search_image(image_url, top_k, fetch, int(max_chars))
+        except Exception as exc:  # noqa: BLE001
+            if not SEARCH_PROXY_FALLBACK:
+                raise
+            logger.warning("search proxy failed; falling back to direct mode: %s", exc)
 
     image_url = _resolve_image_to_url_direct(image.strip())
     logger.info("search_image(direct) image_url=%s top_k=%d fetch=%s",
@@ -324,7 +431,7 @@ if __name__ == "__main__":
 
     args = ap.parse_args()
 
-    print("[mode] direct")
+    print(f"[mode] {_search_mode()}")
 
     if args.cmd == "text":
         out = search_text(args.query, top_k=args.top_k, fetch=not args.no_fetch)
