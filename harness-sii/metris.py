@@ -164,6 +164,7 @@ class TrajectoryStats:
     total_tokens: int = 0
     assistant_turns: int = 0
     tool_calls: int = 0
+    repeated_tool_calls: int = 0
     failed_tool_calls: int = 0
     empty_assistant_turns: int = 0
     elapsed_sec: float = 0.0
@@ -181,6 +182,7 @@ def trajectory_stats(path: Path | None) -> TrajectoryStats:
     rows = _load_trajectory(path)
     stats = TrajectoryStats()
     timestamps: list[float] = []
+    tool_signatures: Counter[str] = Counter()
     for row in rows:
         ts = row.get("timestamp")
         if isinstance(ts, (int, float)):
@@ -198,6 +200,16 @@ def trajectory_stats(path: Path | None) -> TrajectoryStats:
             if not str(content or "").strip() and not tool_calls:
                 stats.empty_assistant_turns += 1
         elif role == "tool":
+            if row.get("fn_name"):
+                try:
+                    sig = json.dumps(
+                        {"fn": row.get("fn_name"), "args": row.get("fn_args") or {}},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                except TypeError:
+                    sig = f"{row.get('fn_name')}:{row.get('fn_args')}"
+                tool_signatures[sig] += 1
             if row.get("fn_name") and stats.tool_calls == 0:
                 # Older trajectories can be counted from tool rows if assistant
                 # tool_calls were not persisted.
@@ -210,6 +222,7 @@ def trajectory_stats(path: Path | None) -> TrajectoryStats:
             stats.reached_max_steps = True
     if timestamps:
         stats.elapsed_sec = max(timestamps) - min(timestamps)
+    stats.repeated_tool_calls = sum(max(0, count - 1) for count in tool_signatures.values())
     return stats
 
 
@@ -226,11 +239,13 @@ class RunSummary:
     avg_tokens: float
     avg_reasoning_turns: float
     avg_tool_calls: float
+    avg_repeated_tool_calls: float
     avg_failed_tool_calls: float
     avg_invalid_steps: float
     avg_elapsed_sec: float
     total_tokens: int
     total_tool_calls: int
+    total_repeated_tool_calls: int
     total_failed_tool_calls: int
     total_elapsed_sec: float
     missing_trajectories: int
@@ -254,6 +269,7 @@ def summarize_run(
     token_values: list[int] = []
     turn_values: list[int] = []
     tool_values: list[int] = []
+    repeated_tool_values: list[int] = []
     failed_tool_values: list[int] = []
     invalid_values: list[int] = []
     elapsed_values: list[float] = []
@@ -289,6 +305,7 @@ def summarize_run(
         token_values.append(stats.total_tokens)
         turn_values.append(stats.assistant_turns)
         tool_values.append(stats.tool_calls)
+        repeated_tool_values.append(stats.repeated_tool_calls)
         failed_tool_values.append(stats.failed_tool_calls)
         invalid_values.append(stats.invalid_steps)
         elapsed_values.append(stats.elapsed_sec)
@@ -302,6 +319,7 @@ def summarize_run(
             "tokens": stats.total_tokens,
             "reasoning_turns": stats.assistant_turns,
             "tool_calls": stats.tool_calls,
+            "repeated_tool_calls": stats.repeated_tool_calls,
             "failed_tool_calls": stats.failed_tool_calls,
             "invalid_steps": stats.invalid_steps,
             "elapsed_sec": stats.elapsed_sec,
@@ -321,11 +339,13 @@ def summarize_run(
         avg_tokens=statistics.mean(token_values) if token_values else 0.0,
         avg_reasoning_turns=statistics.mean(turn_values) if turn_values else 0.0,
         avg_tool_calls=statistics.mean(tool_values) if tool_values else 0.0,
+        avg_repeated_tool_calls=statistics.mean(repeated_tool_values) if repeated_tool_values else 0.0,
         avg_failed_tool_calls=statistics.mean(failed_tool_values) if failed_tool_values else 0.0,
         avg_invalid_steps=statistics.mean(invalid_values) if invalid_values else 0.0,
         avg_elapsed_sec=statistics.mean(elapsed_values) if elapsed_values else 0.0,
         total_tokens=sum(token_values),
         total_tool_calls=sum(tool_values),
+        total_repeated_tool_calls=sum(repeated_tool_values),
         total_failed_tool_calls=sum(failed_tool_values),
         total_elapsed_sec=sum(elapsed_values),
         missing_trajectories=missing_traj,
@@ -359,6 +379,10 @@ def compare_runs(
     if baseline.avg_invalid_steps == 0:
         reasoning_reduction = _ratio_reduction(baseline.avg_reasoning_turns, evolved.avg_reasoning_turns)
     tool_reduction = _ratio_reduction(baseline.avg_tool_calls, evolved.avg_tool_calls)
+    repeated_tool_reduction = _ratio_reduction(
+        baseline.avg_repeated_tool_calls,
+        evolved.avg_repeated_tool_calls,
+    )
     failed_tool_reduction = _ratio_reduction(
         baseline.avg_failed_tool_calls,
         evolved.avg_failed_tool_calls,
@@ -382,11 +406,15 @@ def compare_runs(
             "max_score": 7,
         },
         "tool_call_optimization": {
-            "value": max(tool_reduction, failed_tool_reduction),
-            "score": _dimension_score(max(tool_reduction, failed_tool_reduction), target=0.20),
+            "value": max(tool_reduction, failed_tool_reduction, repeated_tool_reduction),
+            "score": _dimension_score(
+                max(tool_reduction, failed_tool_reduction, repeated_tool_reduction),
+                target=0.20,
+            ),
             "max_score": 7,
             "avg_tool_call_reduction": tool_reduction,
             "avg_failed_tool_call_reduction": failed_tool_reduction,
+            "avg_repeated_tool_call_reduction": repeated_tool_reduction,
         },
         "time_optimization": {
             "value": time_reduction,

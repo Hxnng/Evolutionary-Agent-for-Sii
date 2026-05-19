@@ -213,6 +213,19 @@ python -B evaluate_2wiki.py \
   --limit 20
 ```
 
+全量并行（与 SimpleVQA 相同，建议 `--workers 4` 或 `8` 起步）：
+
+```bash
+python -B evaluate_2wiki.py \
+  --dataset data/2wiki \
+  --split validation \
+  --output runs/evolved/2wiki_predictions.jsonl \
+  --metrics-output runs/evolved/2wiki_metrics.json \
+  --traj-dir runs/evolved/2wiki_trajectories \
+  --split-name 2wiki \
+  --workers 8
+```
+
 说明：本地 `2wiki` 的 validation/test parquet 可读；train shard 中若有不可读文件，脚本默认会跳过。需要严格失败则加 `--strict`。
 
 ### benchmark.csv
@@ -232,6 +245,25 @@ python -B evaluate_benchmark.py \
   --metrics-output runs/evolved/benchmark_metrics.json \
   --traj-dir runs/evolved/benchmark_trajectories \
   --split-name benchmark
+```
+
+并行：
+
+```bash
+python -B evaluate_benchmark.py \
+  --dataset data/benchmark.csv \
+  --output runs/evolved/benchmark_predictions.jsonl \
+  --metrics-output runs/evolved/benchmark_metrics.json \
+  --traj-dir runs/evolved/benchmark_trajectories \
+  --split-name benchmark \
+  --workers 8
+```
+
+统一流水线（可选，支持 `DATASET_NAME` / `WORKERS` / baseline+evolved）：
+
+```bash
+cd harness-sii
+DATASET_NAME=2wiki WORKERS=8 LIMIT=200 bash pipeline.sh
 ```
 
 ## 输出格式

@@ -67,6 +67,9 @@ python -B task_runner.py \
 
 ## SimpleVQA
 
+进化版默认会注入数据集中的非答案线索（如 `atomic_fact`、`source`、类别信息）和长期记忆；基线用 `--baseline` 关闭这些增强，便于做评分要求里的对比实验。
+这些线索会先经过 `playbook.py` 的 skillbook 路由，只检索当前题需要的 3-5 条策略，例如 direct-entity、attribute-lookup、location-origin、text-ocr、medicine-science，避免把完整 playbook 塞进上下文。
+
 ```bash
 python -B evaluate.py \
   --dataset data/simpleVQA/simpleVQA_final_modified.json \
@@ -93,7 +96,33 @@ python -B evaluate.py \
 
 `--workers` 建议从 4 或 8 开始，稳定后再试 12/16。
 
+基线对比：
+
+```bash
+python -B evaluate.py \
+  --dataset data/simpleVQA/simpleVQA_final_modified.json \
+  --image-root data/simpleVQA/simpleVQA_datasets \
+  --output runs/baseline/simplevqa_predictions.jsonl \
+  --metrics-output runs/baseline/simplevqa_metrics.json \
+  --traj-dir runs/baseline/simplevqa_trajectories \
+  --split-name simplevqa \
+  --baseline \
+  --limit 100
+```
+
 ## 2Wiki
+
+读取 parquet 需要 **pyarrow**（已在 `requirements.txt`）。若报 `Reading parquet requires pyarrow`：
+
+```bash
+conda activate sii-harness
+cd harness-sii
+pip install -r requirements.txt
+```
+
+进化版会把 2Wiki 的 supporting titles 置顶为 Focus documents，并保留完整候选上下文用于核验；不会把 `answer` 字段写入 prompt。
+同时，evolved 模式会优先使用 `evidences` 三元组做确定性 fast-path：能由证据链推出答案时直接写最小轨迹，不能推出时再回落到 ReAct。这样能显著降低 2Wiki 的 token、轮数、工具调用和总耗时。
+当前实现会先把 2Wiki row 压缩成 compact context packet：question + evidence triples + supporting sentences，再按需检索 chain/date-compare/country-alias/lifespan 等 skill。
 
 ```bash
 python -B evaluate_2wiki.py \
@@ -106,6 +135,20 @@ python -B evaluate_2wiki.py \
   --limit 20
 ```
 
+本地 200 条验证集快速刷分：
+
+```bash
+python -B evaluate_2wiki.py \
+  --dataset data/2wiki \
+  --split validation \
+  --output runs/evolved/2wiki_predictions_200.jsonl \
+  --metrics-output runs/evolved/2wiki_metrics_200.json \
+  --traj-dir runs/evolved/2wiki_trajectories_200 \
+  --split-name 2wiki \
+  --limit 200 \
+  --workers 8
+```
+
 ## benchmark.csv
 
 ```bash
@@ -114,7 +157,14 @@ python -B evaluate_benchmark.py \
   --output runs/evolved/benchmark_predictions.jsonl \
   --metrics-output runs/evolved/benchmark_metrics.json \
   --traj-dir runs/evolved/benchmark_trajectories \
-  --split-name benchmark
+  --split-name benchmark \
+  --workers 8
+```
+
+或使用 `pipeline.sh`：
+
+```bash
+DATASET_NAME=benchmark WORKERS=8 LIMIT=200 bash pipeline.sh
 ```
 
 ## Metrics
@@ -124,4 +174,16 @@ python -B metris.py \
   --pred runs/evolved/simplevqa_predictions.jsonl \
   --traj-dir runs/evolved/simplevqa_trajectories \
   --output runs/evolved/simplevqa_report.json
+```
+
+对比基线和进化版：
+
+```bash
+python -B metris.py \
+  --baseline-pred runs/baseline/simplevqa_predictions.jsonl \
+  --baseline-traj runs/baseline/simplevqa_trajectories \
+  --evolved-pred runs/evolved/simplevqa_predictions.jsonl \
+  --evolved-traj runs/evolved/simplevqa_trajectories \
+  --case-limit 100 \
+  --output runs/simplevqa_compare_report.json
 ```

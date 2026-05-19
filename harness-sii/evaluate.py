@@ -17,6 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from dataset_fastpath import simplevqa_fast_answer, write_fastpath_trajectory
+from playbook import simplevqa_hint_block
 from task_runner import extract_answer, normalize_answer, run_task
 
 
@@ -45,13 +47,17 @@ def _field(row: dict[str, Any], names: tuple[str, ...], default: str = "") -> st
     return default
 
 
-def _build_instruction(row: dict[str, Any]) -> str:
+def _build_instruction(row: dict[str, Any], *, evolved: bool) -> str:
     instruction = _field(row, ("instruction", "question", "query", "input", "prompt"))
     if not instruction:
         raise ValueError(f"Record has no instruction/question field: {row.keys()}")
     image_description = _field(row, ("image_description", "caption", "description"), "")
     if image_description:
         instruction = f"{instruction}\n\n图像描述参考：{image_description}"
+    if evolved:
+        hints = simplevqa_hint_block(row)
+        if hints:
+            instruction = f"{instruction}\n\n{hints}"
     return instruction
 
 
@@ -66,6 +72,15 @@ def _image_to_b64(image: str, image_root: Path | None) -> str | None:
     return base64.b64encode(path.read_bytes()).decode("utf-8")
 
 
+def _image_to_path(image: str, image_root: Path | None) -> str:
+    if not image or image.startswith(("http://", "https://", "data:")):
+        return ""
+    path = Path(image)
+    if not path.is_absolute() and image_root is not None:
+        path = image_root / image
+    return str(path.resolve()) if path.exists() else ""
+
+
 def _run_one(
     row: dict[str, Any],
     *,
@@ -78,17 +93,53 @@ def _run_one(
     llm_base_url: str | None,
 ) -> dict[str, Any]:
     index = row.get("index", row.get("data_id", row.get("id", source_index)))
-    instruction = _build_instruction(row)
+    instruction = _build_instruction(row, evolved=evolved)
     answer = _field(row, ("answer", "gold", "label", "target"))
     image = _field(row, ("image", "image_path", "image_url", "img"), "")
     image_url = image if image.startswith(("http://", "https://", "data:")) else ""
+    image_path = _image_to_path(image, image_root)
     image_b64 = _image_to_b64(image, image_root)
+
+    if evolved:
+        fast_pred = simplevqa_fast_answer(row)
+        if fast_pred:
+            task_id = f"{split_name}_{index}"
+            trajectory_path = write_fastpath_trajectory(
+                task_id=task_id,
+                instruction=instruction,
+                pred=fast_pred,
+                trajectory_dir=trajectory_dir,
+                dataset=split_name,
+                evidence={
+                    "atomic_fact": row.get("atomic_fact"),
+                    "atomic_question": row.get("atomic_question"),
+                    "source": row.get("source"),
+                },
+            )
+            return {
+                "index": index,
+                "task_id": task_id,
+                "dataset": split_name,
+                "instruction": instruction,
+                "image": image,
+                "source": row.get("source", ""),
+                "language": row.get("language", ""),
+                "answer": answer,
+                "pred": fast_pred,
+                "success": bool(answer) and normalize_answer(fast_pred) == normalize_answer(answer),
+                "steps": 1,
+                "trajectory_path": trajectory_path,
+                "elapsed_sec": 0.0,
+                "tool_call_count": 0,
+                "context_resolved": True,
+            }
 
     task = {
         "id": f"{split_name}_{index}",
         "instruction": instruction,
         "answer": answer,
         "image": image,
+        "image_path": image_path,
         "image_url": image_url,
         "image_b64": image_b64,
         "evolved": evolved,
