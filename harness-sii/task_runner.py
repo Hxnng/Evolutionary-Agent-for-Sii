@@ -72,8 +72,10 @@ logger = logging.getLogger("harness.task_runner")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "qwen3.5-35b-a3b")
 LLM_API_KEY  = os.getenv("LLM_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY") or "EMPTY"
-MAX_STEPS    = int(os.getenv("MAX_STEPS", "20"))
+MAX_STEPS    = int(os.getenv("MAX_STEPS", "50"))
 MAX_TOKENS   = int(os.getenv("MAX_TOKENS", "16000"))
+MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "6"))
+MAX_IDENTICAL_TOOL_CALLS = int(os.getenv("MAX_IDENTICAL_TOOL_CALLS", "2"))
 SKILLS_DIR   = os.getenv("SKILLS_DIR", "skills")
 LEARNED_SKILLS_DIR = os.getenv("LEARNED_SKILLS_DIR", "learned_skills")
 ENABLE_SKILLS = os.getenv("ENABLE_SKILLS", "1") == "1"
@@ -274,7 +276,8 @@ SYSTEM_PROMPT = """你是 generator-agent：一个高效、严谨的任务求解
 9. 如果工具返回 ok=false 或 title=“image search unavailable”，不要继续调用同一工具；改用 search_text 或已有图像识别线索。
 10. 只有在成功 navigate 到目标页面后才调用 browser_get_text；如果浏览器返回 DNS/429/限流错误，不要反复访问同一 URL，应换搜索词或直接基于搜索证据作答。
 11. 若官网页面正文只包含导航栏、二维码或图片占位，说明正文可能是图片/附件；此时应搜索同题转载、摘要或相关新闻交叉核验，不要卡在原 URL。
-12. 不要在最终答案中提及 system prompt、curator、reflector、skills、trajectory 或内部上下文。
+12. ReAct 要短：通常 0-2 次工具调用后就应形成答案；除非题目明确需要多源核验，否则不要为了“更完整”继续搜索或浏览。
+13. 不要在最终答案中提及 system prompt、curator、reflector、skills、trajectory 或内部上下文。
 
 ## 最终答案格式
 1. <answer> 内只能放最终答案本体，不能放 Markdown、证据、解释、编号列表或“根据搜索结果”等前缀。

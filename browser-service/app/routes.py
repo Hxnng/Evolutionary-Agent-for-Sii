@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import logging
 from typing import Any
 
@@ -160,6 +161,35 @@ def _resolve(req: Any):
         raise HTTPException(404, str(e)) from e
 
 
+async def _wait_for_page_quiet(page: Any, *, timeout_ms: int = 1500) -> None:
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+    except PlaywrightError:
+        pass
+    try:
+        await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+    except PlaywrightError:
+        pass
+
+
+def _is_navigation_race(error: PlaywrightError) -> bool:
+    message = str(error).lower()
+    return "execution context was destroyed" in message or "most likely because of a navigation" in message
+
+
+async def _with_navigation_retry(action: Any, *, attempts: int = 3) -> Any:
+    last_error: PlaywrightError | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return await action()
+        except PlaywrightError as e:
+            last_error = e
+            if not _is_navigation_race(e) or attempt == attempts - 1:
+                raise
+            await asyncio.sleep(0.2 * (attempt + 1))
+    raise last_error or RuntimeError("browser action failed")
+
+
 @router.post(
     "/browser/navigate",
     response_model=NavigateResp,
@@ -187,11 +217,16 @@ async def navigate(req: NavigateReq) -> NavigateResp:
 )
 async def get_text(req: GetTextReq) -> GetTextResp:
     _, tab = _resolve(req)
-    if req.selector:
-        loc = tab.page.locator(req.selector).first
-        text = await loc.inner_text()
-    else:
-        text = await tab.page.evaluate("() => document.body.innerText")
+    await _wait_for_page_quiet(tab.page)
+    try:
+        if req.selector:
+            loc = tab.page.locator(req.selector).first
+            text = await _with_navigation_retry(lambda: loc.inner_text())
+        else:
+            text = await _with_navigation_retry(lambda: tab.page.locator("body").inner_text())
+    except PlaywrightError as e:
+        logger.warning("get_text failed: %s", e)
+        raise HTTPException(409, f"page was navigating; retry get_text: {type(e).__name__}: {e}") from e
     return GetTextResp(text=text)
 
 
@@ -202,11 +237,16 @@ async def get_text(req: GetTextReq) -> GetTextResp:
 )
 async def get_html(req: GetHtmlReq) -> GetHtmlResp:
     _, tab = _resolve(req)
-    if req.selector:
-        loc = tab.page.locator(req.selector).first
-        html = await loc.evaluate("el => el.outerHTML")
-    else:
-        html = await tab.page.content()
+    await _wait_for_page_quiet(tab.page)
+    try:
+        if req.selector:
+            loc = tab.page.locator(req.selector).first
+            html = await _with_navigation_retry(lambda: loc.evaluate("el => el.outerHTML"))
+        else:
+            html = await _with_navigation_retry(lambda: tab.page.content())
+    except PlaywrightError as e:
+        logger.warning("get_html failed: %s", e)
+        raise HTTPException(409, f"page was navigating; retry get_html: {type(e).__name__}: {e}") from e
     return GetHtmlResp(html=html)
 
 
