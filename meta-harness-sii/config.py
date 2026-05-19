@@ -12,9 +12,9 @@ from typing import List, Optional
 @dataclass
 class APIConfig:
     """API配置"""
-    # Proposer配置（mimo V2.5 pro）
-    proposer_api_key: str = "tp-cjeqnl3h4ekv8c1oot1s6pzp0x20yq886hs5d6x6e94f83qb"
-    proposer_base_url: str = "https://token-plan-cn.xiaomimimo.com/v1"
+    # Proposer配置（mimo V2.5 pro - 通过mimo-proxy代理）
+    proposer_api_key: str = "any"  # mimo-proxy不需要认证
+    proposer_base_url: str = "http://localhost:8080/v1"  # mimo-proxy地址
     proposer_model: str = "mimo-v2.5-pro"
 
     # Generator配置
