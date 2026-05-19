@@ -73,7 +73,7 @@ MODEL_NAME   = os.getenv("MODEL_NAME",   "qwen3.5-35b-a3b")
 LLM_API_KEY  = os.getenv("LLM_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY") or "EMPTY"
 MAX_STEPS    = int(os.getenv("MAX_STEPS", "20"))
 MAX_TOKENS   = int(os.getenv("MAX_TOKENS", "16000"))
-MEMORY_PATH  = os.getenv("MEMORY_PATH", "memory/long_term_memory.jsonl")
+MEMORY_PATH  = os.getenv("MEMORY_PATH", "memory/long_term_memory.md")
 ENABLE_MEMORY = os.getenv("ENABLE_MEMORY", "1") == "1"
 ENABLE_REFLECTION = os.getenv("ENABLE_REFLECTION", "1") == "1"
 ENABLE_THINKING = os.getenv("ENABLE_THINKING", "1") == "1"
@@ -665,7 +665,7 @@ def run_task(
     has_gold_answer = bool(str(gold_answer or "").strip())
     should_record_success = (
         ENABLE_MEMORY
-        and os.getenv("RECORD_SUCCESS_MEMORY", "1") == "1"
+        and os.getenv("RECORD_SUCCESS_MEMORY", "0") == "1"
         and success
         and (has_gold_answer or record_ungraded_success)
     )

@@ -34,11 +34,12 @@ class Reflection:
 REFLECTION_PROMPT = """你是 Harness Engineering 的反思模块。请基于任务、标准答案、模型输出和轨迹摘要，分析失败或低效原因。
 必须输出 JSON，不要输出 Markdown：
 {
-  "failure_reason": "一句话说明根因",
-  "corrected_strategy": "下次遇到类似任务应该怎么做",
-  "reusable_memory": "可沉淀到长期记忆的一条经验",
-  "tags": ["simplevqa|2wiki|search|browser|tool|reasoning|format"]
+  "failure_reason": "一句话说明根因，仅用于轨迹审计",
+  "reusable_memory": "一条可复用的纠错策略，必须合并根因和下次做法，30-60字，不要复述题目事实",
+  "tags": ["format", "search", "tool"]
 }
+tags 只能从以下集合中选择 1-3 个最关键标签，不要输出数据集名，不要用 | 拼接：
+format, search, browser, tool, ocr, image, entity, multihop, evidence, efficiency, reasoning
 """
 
 
@@ -83,9 +84,9 @@ def _fallback_reflection(
         tags = ["success", "reasoning"]
 
     if "image" in instruction.lower() or "图" in instruction:
-        tags.append("simplevqa")
+        tags.append("image")
     if "wiki" in instruction.lower() or "多跳" in instruction:
-        tags.append("2wiki")
+        tags.append("multihop")
 
     return Reflection(
         failure_reason=reason,

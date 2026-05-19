@@ -342,8 +342,8 @@ python -B metris.py \
 ```dotenv
 ENABLE_REFLECTION=1
 ENABLE_MEMORY=1
-MEMORY_PATH=memory/long_term_memory.jsonl
-RECORD_SUCCESS_MEMORY=1
+MEMORY_PATH=memory/long_term_memory.md
+RECORD_SUCCESS_MEMORY=0
 RECORD_UNGRADED_SUCCESS_MEMORY=0
 ```
 
@@ -351,8 +351,8 @@ RECORD_UNGRADED_SUCCESS_MEMORY=0
 
 1. `task_runner.py` 执行 ReAct 工具循环。
 2. 失败时 `reflection.py` 生成失败原因、修正策略、可复用经验。
-3. `memory.py` 写入长期记忆。
-4. 后续任务检索相关记忆注入 prompt，但记忆只作为策略建议，不作为事实证据。
+3. `memory.py` 以紧凑 Markdown 写入失败反思，只保留截断后的 `Task / Tags / Memory`，便于直接作为模型 context 复用且避免占用过多 token。
+4. 后续任务检索相关记忆注入 prompt，并在 system prompt 中说明这些记忆都来自历史错误样例，只能作为修正策略参考，不能作为事实证据。
 
 ## 提交材料建议
 
