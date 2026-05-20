@@ -550,23 +550,55 @@ def _messages_for_step(
     current_step: int,
     tool_call_count: int,
     repeated_tool_calls: int,
+    force_answer: bool = False,
 ) -> list[dict]:
     if not ENABLE_REACT_STATE_COMPRESSION or current_step <= REACT_STATE_AFTER_STEPS:
-        return traj.to_messages()
+        msgs = traj.to_messages()
+        if force_answer:
+            # Insert force_answer after the last system message to keep
+            # all system messages at the front (API constraint).
+            last_sys = 0
+            for i, m in enumerate(msgs):
+                if m.get("role") == "system":
+                    last_sys = i + 1
+            msgs.insert(last_sys, _force_answer_message(tool_call_count, repeated_tool_calls))
+        return msgs
 
     rows = traj.read_all()
     if len(rows) <= 4:
-        return [_message_from_entry(row) for row in rows]
+        msgs = [_message_from_entry(row) for row in rows]
+        if force_answer:
+            last_sys = 0
+            for i, m in enumerate(msgs):
+                if m.get("role") == "system":
+                    last_sys = i + 1
+            msgs.insert(last_sys, _force_answer_message(tool_call_count, repeated_tool_calls))
+        return msgs
 
-    system_rows = [row for row in rows if row.get("role") == Role.SYSTEM.value]
-    user_rows = [row for row in rows if row.get("role") == Role.USER.value]
-    messages: list[dict] = []
-    if system_rows:
-        messages.append(_message_from_entry(system_rows[0]))
-    if user_rows:
-        messages.append(_message_from_entry(user_rows[0]))
-    messages.append(_react_state_message(rows, tool_call_count, repeated_tool_calls))
+    # Collect messages by role, preserving order within each group.
+    # System messages (including react state and force_answer) MUST come first
+    # to satisfy the OpenAI-compatible API constraint.
+    system_msgs: list[dict] = []
+    user_msgs: list[dict] = []
+    other_msgs: list[dict] = []
+    for row in rows:
+        role = row.get("role")
+        if role == Role.SYSTEM.value:
+            system_msgs.append(_message_from_entry(row))
+        elif role == Role.USER.value:
+            user_msgs.append(_message_from_entry(row))
+        else:
+            other_msgs.append(_message_from_entry(row))
 
+    # Append react state and force_answer as system-level messages,
+    # placed after the original system prompt but before user messages.
+    system_msgs.append(_react_state_message(rows, tool_call_count, repeated_tool_calls))
+    if force_answer:
+        system_msgs.append(_force_answer_message(tool_call_count, repeated_tool_calls))
+
+    messages = system_msgs + user_msgs
+
+    # Append recent non-system, non-user messages for context.
     cutoff = max(1, current_step - REACT_STATE_RECENT_STEPS)
     recent = [
         row
@@ -674,15 +706,14 @@ def run_task(
     for step in range(1, max_steps + 1):
         logger.info("--- step %d ---", step)
 
+        force_answer = tool_call_count >= MAX_TOOL_CALLS or repeated_tool_calls >= MAX_IDENTICAL_TOOL_CALLS
         messages = _messages_for_step(
             traj,
             current_step=step,
             tool_call_count=tool_call_count,
             repeated_tool_calls=repeated_tool_calls,
+            force_answer=force_answer,
         )
-        force_answer = tool_call_count >= MAX_TOOL_CALLS or repeated_tool_calls >= MAX_IDENTICAL_TOOL_CALLS
-        if force_answer:
-            messages.append(_force_answer_message(tool_call_count, repeated_tool_calls))
         logger.info("messages count=%d, sending to LLM ...", len(messages))
 
         # 构造请求参数：调试模式下不注册 tools，避免协议不匹配
