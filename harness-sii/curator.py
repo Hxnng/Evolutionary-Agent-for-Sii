@@ -9,15 +9,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from memory_store import MemoryStore
 from skill_store import Skill, SkillStore, infer_task_family
 
-CURATOR_CONTEXT_MAX_CHARS = int(os.getenv("CURATOR_CONTEXT_MAX_CHARS", "700"))
-CURATOR_CONTEXT_ITEM_CHARS = int(os.getenv("CURATOR_CONTEXT_ITEM_CHARS", "90"))
+CURATOR_CONTEXT_MAX_CHARS = int(os.getenv("CURATOR_CONTEXT_MAX_CHARS", "2600"))
+CURATOR_CONTEXT_ITEM_CHARS = int(os.getenv("CURATOR_CONTEXT_ITEM_CHARS", "150"))
 CURATOR_PROBLEM_CHARS = int(os.getenv("CURATOR_PROBLEM_CHARS", "260"))
+CURATOR_SKILL_LOCK_CHARS = int(os.getenv("CURATOR_SKILL_LOCK_CHARS", "1500"))
 
 
 @dataclass
@@ -85,6 +87,7 @@ class CuratorAgent:
 
     def _routing_text(self, task: dict[str, Any], profile: dict[str, Any]) -> str:
         parts = [
+            str(task.get("id") or task.get("task_id") or ""),
             str(task.get("instruction") or ""),
             str(task.get("image_url") or ""),
             str(task.get("image_path") or ""),
@@ -94,11 +97,39 @@ class CuratorAgent:
         return "\n".join(part for part in parts if part)
 
     def _fallback_skills(self, task: dict[str, Any], profile: dict[str, Any]) -> list[Skill]:
-        return self.skill_store.retrieve(
+        ranked = self.skill_store.retrieve(
             self._routing_text(task, profile),
             family=profile["family"],
             k=int(os.getenv("SKILL_RETRIEVE_K", "3")),
         )
+        hinted = self._short_term_skills(task, profile)
+        merged: list[Skill] = []
+        seen: set[str] = set()
+        for skill in [*hinted, *ranked]:
+            if skill.skill_id in seen:
+                continue
+            merged.append(skill)
+            seen.add(skill.skill_id)
+        return merged[: int(os.getenv("SKILL_RETRIEVE_K", "3"))]
+
+    def _short_term_skills(self, task: dict[str, Any], profile: dict[str, Any]) -> list[Skill]:
+        if self.memory_store is None:
+            return []
+        memories = self.memory_store.retrieve_short_term(
+            self._routing_text(task, profile),
+            family=profile["family"],
+            k=int(os.getenv("CURATOR_SHORT_TERM_K", "3")),
+            min_score=float(os.getenv("CURATOR_SHORT_TERM_MIN_SCORE", "1.2")),
+        )
+        skills: list[Skill] = []
+        seen: set[str] = set()
+        for memory in memories:
+            for skill_id in memory.selected_skills:
+                skill = self.skill_store.get(skill_id)
+                if skill and skill.skill_id not in seen and skill.skill_id not in {"memory", "init_skill"}:
+                    skills.append(skill)
+                    seen.add(skill.skill_id)
+        return skills
 
     def _profile_task(self, task: dict[str, Any], tools_schema: list[dict[str, Any]]) -> dict[str, Any]:
         instruction = str(task.get("instruction") or "")
@@ -164,6 +195,10 @@ class CuratorAgent:
             family=profile["family"],
             k=int(os.getenv("CURATOR_SKILL_CONTEXT_K", "3")),
         )
+        hinted_skills = self._short_term_skills(task, profile)
+        if hinted_skills:
+            by_id = {skill.skill_id: skill for skill in [*hinted_skills, *candidate_skills]}
+            candidate_skills = list(by_id.values())[: int(os.getenv("CURATOR_SKILL_CONTEXT_K", "3"))]
         available_skills = [
             {
                 "skill_id": skill.skill_id,
@@ -200,6 +235,10 @@ class CuratorAgent:
             "long_term_skill_index": self.skill_store.manifest_text(),
             "available_skills": available_skills,
             "candidate_skill_context": skill_context,
+            "short_term_skill_hints": [
+                {"skill_id": skill.skill_id, "summary": skill.summary}
+                for skill in hinted_skills
+            ],
         }
         try:
             resp = client.chat.completions.create(
@@ -232,6 +271,12 @@ class CuratorAgent:
         seen: set[str] = set()
         fallback_ranked = self._fallback_skills(task, profile)
         max_skills = int(os.getenv("CURATOR_MAX_SELECTED_SKILLS", "2"))
+        for skill in self._short_term_skills(task, profile):
+            if skill.skill_id not in seen:
+                selected.append(skill)
+                seen.add(skill.skill_id)
+            if len(selected) >= max_skills:
+                break
         for skill_id in curator_plan.get("selected_skill_ids", []) or []:
             skill = self.skill_store.get(str(skill_id))
             if not skill or skill.skill_id in seen:
@@ -297,6 +342,10 @@ class CuratorAgent:
             lines.extend(["", "### Tools", *tool_plan])
         else:
             lines.extend(["", "### Tools", "- Use tools only for a concrete missing fact."])
+
+        skill_lock = _skill_lock_lines(skills)
+        if skill_lock:
+            lines.extend(["", "### Locked Skill", *skill_lock])
 
         lines.extend(
             [
@@ -368,6 +417,10 @@ class CuratorAgent:
                     "- No external tools are registered; answer only from current evidence.",
                 ]
             )
+
+        skill_lock = _skill_lock_lines(skills)
+        if skill_lock:
+            lines.extend(["", "### Locked Skill", *skill_lock])
 
         lines.extend(
             [
@@ -457,21 +510,21 @@ class CuratorAgent:
 
 CURATOR_SYSTEM_PROMPT = """你是 curator-agent，负责把“当前题目 + 可用工具 + 长期 skill 知识”压缩成 generator 的专用作战上下文。
 
-你的输出不是通用提示词，也不是 skill 摘抄；它必须是当前题专属的 ReAct 战术卡片。
+你的输出不是通用提示词；它必须是当前题专属的 ReAct 战术卡片。benchmark skill 可能包含训练出来的轨迹步骤、查询模板、候选剪枝和失败回退，这些要优先保留。
 
 内部工作流：
 1. 题目诊断：判断答案类型、要求粒度、语言/单位/包装，以及题目属于图像、搜索、2Wiki、多跳、格式控制还是纯推理。
 2. 证据盘点：指出当前题已有证据（如 atomic_fact、source_digest、candidate context、image/text clues、tool evidence）能解决什么，还缺什么。
-3. skill 消化：阅读 candidate_skill_context，只吸收真正匹配当前题的策略或知识型流程；把它改写成当前题具体动作，不得复制 skill 原文。
-4. 工具计划：只有存在明确证据缺口时才设计工具调用；写出查询/浏览目标和停止条件。
+3. skill 消化：阅读 candidate_skill_context；一旦强匹配，必须把 selected_skill_ids 锁定到对应 skill，并把 Procedure / Evidence And Tool Plan / Avoid Pitfalls / Stop Fallback 里的轨迹动作转写进 evidence/tool/stop/output。
+4. 工具计划：优先复用 skill 中给出的具体搜索词、实体锚点、时间窗口、候选排除顺序；只有 skill 没覆盖的证据缺口才新增查询。
 5. 上下文裁剪：删掉背景解释、泛泛原则、skill 名称说明、系统提示和 short-term memory。
 
 质量要求：
 - 每条都必须包含当前题的实体、关系、证据缺口、工具条件或输出约束之一；禁止“仔细分析”“使用相关证据”这类空话。
-- 当前题证据优先；skill 只能提供策略和领域流程，不能替代当前证据。
-- 如果某个 skill 强匹配，selected_skill_ids 填它，并把其有效内容转写到 evidence/tool/stop/output 中。
-- 为小模型服务：每个字段普通题 0-1 条，复杂题最多 2 条；每条尽量 25 个汉字或 20 个英文词以内。
-- 契合 ReAct：优先写“要看什么证据、何时用工具、何时停止、答案怎么包”，不要写背景解释。
+- 当前题证据优先；skill 提供轨迹化检索/验证流程，不能替代当前证据或直接当事实答案。
+- 如果某个 skill 强匹配，selected_skill_ids 必须填它；不要空选，不要退回泛化策略。
+- 为小模型服务：每个字段普通题 0-1 条，复杂题最多 2 条；涉及 benchmark skill 的 tool_plan 可以更长，保留 skill 中最关键的查询模板。
+- 契合 ReAct：优先写“按 skill 先查什么、怎么剪枝、看到什么证据停止、答案怎么包”，不要写背景解释。
 - 不要给最终答案，不要泄露 gold answer，不要输出 short-term memory 字段。
 
 只输出 JSON，字段固定如下：
@@ -530,11 +583,53 @@ def _clip_items(items: list[str], max_items: int) -> list[str]:
     return [f"- {_clip(str(item).removeprefix('-').strip(), CURATOR_CONTEXT_ITEM_CHARS)}" for item in items[:max_items] if str(item).strip()]
 
 
+def _skill_lock_lines(skills: list[Skill]) -> list[str]:
+    lines: list[str] = []
+    for skill in skills[: int(os.getenv("CURATOR_LOCKED_SKILL_K", "1"))]:
+        excerpt = _skill_execution_excerpt(skill.body)
+        if not excerpt:
+            continue
+        lines.append(
+            f"- LOCK `{skill.skill_id}`: this learned skill may contain trajectory-like search steps; follow it before generic reasoning. {excerpt}"
+        )
+    return lines
+
+
+def _skill_execution_excerpt(body: str) -> str:
+    text = str(body or "")
+    if "domains: general, benchmark" in text[:300] or "Question type:" in text[:600]:
+        return _clip(" ".join(text.split()), CURATOR_SKILL_LOCK_CHARS)
+    wanted = (
+        "Procedure",
+        "Evidence And Tool Plan",
+        "Stop / Fallback",
+        "工具计划",
+        "上下文/证据选择流程",
+        "停止/回退条件",
+        "输出格式风险",
+    )
+    lines: list[str] = []
+    take = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            take = any(key.lower() in line.lower() for key in wanted)
+            continue
+        if take and (line.startswith("-") or re.match(r"^\d+[.、]", line)):
+            lines.append(line)
+        if len(" ".join(lines)) >= CURATOR_SKILL_LOCK_CHARS:
+            break
+    excerpt = " ".join(lines) if lines else " ".join(text.split())
+    return _clip(excerpt, CURATOR_SKILL_LOCK_CHARS)
+
+
 def _cap_context(lines: list[str], max_chars: int) -> str:
     text = "\n".join(lines).strip()
     if len(text) <= max_chars:
         return text
-    keep_sections = {"## ReAct Context", "### Q", "### Goal", "### Focus", "### Evidence", "### Tools", "### Stop", "### Output"}
+    keep_sections = {"## ReAct Context", "### Q", "### Goal", "### Focus", "### Evidence", "### Tools", "### Locked Skill", "### Stop", "### Output"}
     compact: list[str] = []
     current_heading = ""
     for line in lines:
@@ -550,9 +645,10 @@ def _cap_context(lines: list[str], max_chars: int) -> str:
                 compact.append("")
             continue
         if line.startswith("-"):
-            if sum(1 for x in compact if x.startswith("-")) >= 8:
+            if current_heading != "### Locked Skill" and sum(1 for x in compact if x.startswith("-")) >= 8:
                 continue
-            candidate = _clip(line, CURATOR_CONTEXT_ITEM_CHARS + 2)
+            limit = CURATOR_SKILL_LOCK_CHARS + 120 if current_heading == "### Locked Skill" else CURATOR_CONTEXT_ITEM_CHARS + 2
+            candidate = _clip(line, limit)
         else:
             candidate = _clip(line, CURATOR_PROBLEM_CHARS)
         next_text = "\n".join([*compact, candidate]).strip()

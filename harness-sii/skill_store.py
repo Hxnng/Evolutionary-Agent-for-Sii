@@ -42,6 +42,46 @@ _GENERIC_TRIGGERS = {
     "格式",
     "搜索",
 }
+_DISTINCTIVE_STOPWORDS = _GENERIC_TRIGGERS | _FAMILY_TAGS | {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "be",
+    "between",
+    "both",
+    "by",
+    "final",
+    "for",
+    "from",
+    "had",
+    "has",
+    "have",
+    "in",
+    "is",
+    "it",
+    "its",
+    "may",
+    "needed",
+    "of",
+    "only",
+    "or",
+    "please",
+    "problem",
+    "question",
+    "return",
+    "specific",
+    "the",
+    "their",
+    "this",
+    "to",
+    "was",
+    "when",
+    "with",
+    "within",
+    "years",
+}
 AGGREGATE_SKILL_IDS = {
     "memory",
     "search",
@@ -134,6 +174,28 @@ def _specificity_bonus(skill: "Skill") -> float:
         ]
     )
     return min(1.0, 0.25 * len(specific_triggers) + 0.15 * domain_count)
+
+
+def _distinctive_overlap_bonus(skill: "Skill", query_tokens: set[str]) -> float:
+    fields = " ".join([skill.skill_id, skill.title, skill.summary, " ".join(skill.triggers)])
+    skill_tokens = {
+        token
+        for token in _tokens(fields)
+        if token not in _DISTINCTIVE_STOPWORDS and len(token) >= 3
+    }
+    query_specific = {
+        token
+        for token in query_tokens
+        if token not in _DISTINCTIVE_STOPWORDS and len(token) >= 3
+    }
+    id_tokens = {
+        token
+        for token in _tokens(skill.skill_id)
+        if token not in _DISTINCTIVE_STOPWORDS and len(token) >= 3
+    }
+    overlap = query_specific & skill_tokens
+    id_overlap = query_specific & id_tokens
+    return min(3.5, 0.28 * len(overlap) + 0.35 * len(id_overlap))
 
 
 def _compact(text: Any, limit: int = 240) -> str:
@@ -399,10 +461,15 @@ class SkillStore:
                 overlap_score
                 + trigger_bonus
                 + domain_bonus
+                + _distinctive_overlap_bonus(skill, query_tokens)
                 + learned_bonus
                 + _specificity_bonus(skill)
                 + skill.confidence * 0.15
             )
+            if family == "general" and skill.skill_id.startswith("benchmark-"):
+                score += 0.35
+            if skill.skill_id in AGGREGATE_SKILL_IDS:
+                score -= 0.35
             if score >= SKILL_MIN_SCORE:
                 scored.append((score, -pos, skill))
         scored.sort(reverse=True)
@@ -507,14 +574,14 @@ class SkillStore:
             "",
             "This is a compact routing index for long-term learned skills.",
             "",
-            "Use it to choose which skill files are worth reading. Do not paste this index or whole skill files into generator context.",
+            "Use it to choose which skill files are worth reading. When a skill strongly matches, lock its compact procedure into generator context.",
             "",
             "## How Curator Uses This",
             "",
             "1. Read the current question first: answer type, entities, relation, evidence already present, and the exact missing evidence.",
             "2. Use this index only for routing. Select a skill only when its summary/triggers match the question's concrete risk.",
             "3. Read at most the few selected skill bodies, digest them, then write a short problem-specific context for generator.",
-            "4. The generator context should contain actions, evidence gaps, tool conditions, stop rules, and answer contract. It should not contain skill names, skill prose, or system prompts.",
+            "4. The generator context should contain actions, evidence gaps, tool conditions, stop rules, answer contract, and a compact locked-skill procedure when a skill matches.",
             "5. If no skill strongly matches, use `general/memory.md` as a fallback process, not as a source of facts.",
             "",
             "## How Reflector Uses This",
@@ -522,7 +589,7 @@ class SkillStore:
             "1. Do credit assignment from the trajectory: evidence, tool, reasoning, stopping, or output-format failure.",
             "2. Update only the skill whose trigger truly matches the reusable failure mode.",
             "3. Create a new knowledge/task skill only when the pattern has a narrow stable trigger and a reusable procedure.",
-            "4. Do not store one-off benchmark answers, task IDs, raw trajectory text, or short-term episode facts here.",
+            "4. Benchmark skills may keep distilled trajectory/search steps; avoid only raw task IDs, noisy logs, and unsupported one-off facts.",
             "",
             "## Memory Boundary",
             "",

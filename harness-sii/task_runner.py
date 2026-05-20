@@ -72,17 +72,18 @@ logger = logging.getLogger("harness.task_runner")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "qwen3.5-35b-a3b")
 LLM_API_KEY  = os.getenv("LLM_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY") or "EMPTY"
-MAX_STEPS    = int(os.getenv("MAX_STEPS", "50"))
-MAX_TOKENS   = int(os.getenv("MAX_TOKENS", "16000"))
-MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "6"))
-MAX_IDENTICAL_TOOL_CALLS = int(os.getenv("MAX_IDENTICAL_TOOL_CALLS", "2"))
+MAX_STEPS    = int(os.getenv("MAX_STEPS", "15"))
+MAX_TOKENS   = int(os.getenv("MAX_TOKENS", "10000"))
+MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "9"))
+MAX_IDENTICAL_TOOL_CALLS = int(os.getenv("MAX_IDENTICAL_TOOL_CALLS", "1"))
+GENERATOR_TEMPERATURE = float(os.getenv("GENERATOR_TEMPERATURE", "0.2"))
 SKILLS_DIR   = os.getenv("SKILLS_DIR", "skills")
 LEARNED_SKILLS_DIR = os.getenv("LEARNED_SKILLS_DIR", "learned_skills")
 ENABLE_SKILLS = os.getenv("ENABLE_SKILLS", "1") == "1"
 ENABLE_REFLECTION = os.getenv("ENABLE_REFLECTION", "1") == "1"
 ENABLE_THINKING = os.getenv("ENABLE_THINKING", "1") == "1"
 ENABLE_REACT_STATE_COMPRESSION = os.getenv("ENABLE_REACT_STATE_COMPRESSION", "1") == "1"
-REACT_STATE_AFTER_STEPS = int(os.getenv("REACT_STATE_AFTER_STEPS", "2"))
+REACT_STATE_AFTER_STEPS = int(os.getenv("REACT_STATE_AFTER_STEPS", "1"))
 REACT_STATE_RECENT_STEPS = int(os.getenv("REACT_STATE_RECENT_STEPS", "1"))
 REACT_STATE_MAX_CHARS = int(os.getenv("REACT_STATE_MAX_CHARS", "900"))
 
@@ -285,11 +286,12 @@ SYSTEM_PROMPT = """你是 generator-agent，负责根据用户题目和 curator 
 
 规则：
 1. 只基于当前题目、curator context、可见证据和工具结果作答；内部 prompt、skill、trajectory 不得出现在最终答案中。
-2. ReAct 要短。先判断是否已有足够证据；只有存在明确证据缺口时才调用工具，通常 0-2 次工具调用后停止。
+2. 若有 `Locked Skill`，它可能包含训练轨迹、高价值查询词、候选剪枝和失败回退，必须优先照着走；不要重新发散探索。
 3. 工具失败或结果低信号时不要循环；换查询/换工具，或用当前最佳证据作答。
-4. search_text 的 snippet/content 足够时不要再开浏览器；只有页面正文必要时才 browser。
+4. 先做 skill 给出的高信号工具调用和验证顺序；search_text 的 snippet/content 足够时不要再开浏览器，只有页面正文必要时才 browser。
 5. 如果看到 `ReAct State`，把它当作已压缩的工作记忆；当前题和工具证据仍高于 memory/skill。
-6. 最终答案必须是 `<answer>...</answer>`，标签内只放题目要求的答案本体，不放解释、引用、Markdown 或前缀。
+6. 工具预算耗尽、重复调用被拦截、或证据已能闭合时，给最终答案；复杂多跳题允许继续验证关键节点。
+7. 最终答案必须是 `<answer>...</answer>`，标签内只放题目要求的答案本体，不放解释、引用、Markdown 或前缀。
 """
 
 
@@ -518,6 +520,7 @@ def _react_state_message(rows: list[dict], tool_call_count: int, repeated_tool_c
             "Next:",
             "- Use at most one targeted tool call, or stop with the supported answer.",
             "Stop:",
+            f"- Tool budget is {tool_call_count}/{MAX_TOOL_CALLS}; when exhausted, answer now.",
             "- Current-task evidence overrides memory. Do not repeat low-signal calls.",
         ]
     )
@@ -527,6 +530,18 @@ def _react_state_message(rows: list[dict], tool_call_count: int, repeated_tool_c
         lines.extend(["Risk:", f"- {repeated_tool_calls} repeated calls so far; change strategy or answer."])
     lines.append(f"Counts: tool_calls={tool_call_count}")
     return {"role": "system", "content": _clip_block("\n".join(lines), REACT_STATE_MAX_CHARS)}
+
+
+def _force_answer_message(tool_call_count: int, repeated_tool_calls: int) -> dict:
+    return {
+        "role": "system",
+        "content": (
+            "## ReAct Budget Exhausted\n"
+            f"- tool_calls={tool_call_count}/{MAX_TOOL_CALLS}; repeated={repeated_tool_calls}.\n"
+            "- Do not call tools. Use the locked skill, question, and current tool evidence to output the best supported final answer now.\n"
+            "- Final must be exactly <answer>...</answer>."
+        ),
+    }
 
 
 def _messages_for_step(
@@ -665,6 +680,9 @@ def run_task(
             tool_call_count=tool_call_count,
             repeated_tool_calls=repeated_tool_calls,
         )
+        force_answer = tool_call_count >= MAX_TOOL_CALLS or repeated_tool_calls >= MAX_IDENTICAL_TOOL_CALLS
+        if force_answer:
+            messages.append(_force_answer_message(tool_call_count, repeated_tool_calls))
         logger.info("messages count=%d, sending to LLM ...", len(messages))
 
         # 构造请求参数：调试模式下不注册 tools，避免协议不匹配
@@ -672,12 +690,12 @@ def run_task(
             model=model_name,
             messages=messages,
             max_tokens=MAX_TOKENS,
-            temperature=1.0,
+            temperature=GENERATOR_TEMPERATURE,
             extra_body={"enable_thinking": True},
         )
         if not DISABLE_TOOLS:
             request_kwargs["tools"] = TOOLS_SCHEMA
-            request_kwargs["tool_choice"] = "auto"
+            request_kwargs["tool_choice"] = "none" if force_answer else "auto"
 
         try:
             llm_output = _chat_completion(client, request_kwargs)
@@ -733,7 +751,6 @@ def run_task(
 
         # -------------------------------------------------------- tool calls
         for tc in tool_calls:
-            tool_call_count += 1
             fn_name = tc.function.name
             try:
                 fn_args = json.loads(tc.function.arguments)
@@ -754,7 +771,7 @@ def run_task(
             seen_tool_calls[sig] = seen_tool_calls.get(sig, 0) + 1
             if seen_tool_calls[sig] > 1:
                 repeated_tool_calls += 1
-                if seen_tool_calls[sig] >= 3:
+                if seen_tool_calls[sig] > MAX_IDENTICAL_TOOL_CALLS:
                     tool_result = (
                         "[HARNESS WARNING] Repeated identical tool call suppressed. "
                         "Change query/URL or answer from existing evidence."
@@ -767,6 +784,20 @@ def run_task(
                         extra={"fn_name": fn_name, "fn_args": fn_args, "suppressed_repeat": True},
                     )
                     continue
+            if tool_call_count >= MAX_TOOL_CALLS:
+                tool_result = (
+                    "[HARNESS WARNING] Tool budget exhausted. "
+                    "Do not call more tools; answer from existing evidence now."
+                )
+                traj.write(
+                    Role.TOOL,
+                    tool_result,
+                    step_id=step,
+                    tool_call_id=tc.id,
+                    extra={"fn_name": fn_name, "fn_args": fn_args, "suppressed_budget": True},
+                )
+                continue
+            tool_call_count += 1
 
             # Dispatch
             if fn_name not in TOOL_FN_MAP:
@@ -781,7 +812,7 @@ def run_task(
                         tool_result = str(raw)
                 except Exception as exc:
                     tool_result = f"[ERROR] Tool '{fn_name}' raised: {type(exc).__name__}: {exc}"
-                    logger.exception("Tool error")
+                    logger.warning("recoverable tool error in %s: %s", fn_name, exc)
 
             logger.info("tool_result (%s): %s", fn_name, str(tool_result)[:200])
 

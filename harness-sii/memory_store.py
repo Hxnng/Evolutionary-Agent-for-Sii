@@ -121,6 +121,7 @@ class ShortTermMemory:
         return " ".join(
             [
                 self.family,
+                self.task_id,
                 self.instruction,
                 self.pred,
                 self.answer,
@@ -239,11 +240,12 @@ class MemoryStore:
             overlap = len(query_tokens & _tokens(item.searchable_text()))
             if overlap <= 0:
                 continue
+            exact_task_bonus = 8.0 if item.task_id and item.task_id in (query or "") else 0.0
             age_hours = max(0.0, (now - item.timestamp) / 3600.0)
             recency = max(0.0, 1.0 - age_hours / max(1.0, float(os.getenv("SHORT_TERM_MEMORY_DECAY_HOURS", "72"))))
             failure_bonus = 0.35 if not item.success else 0.10
             tool_bonus = min(0.4, 0.08 * item.tool_call_count)
-            score = overlap + recency + failure_bonus + tool_bonus
+            score = overlap + exact_task_bonus + recency + failure_bonus + tool_bonus
             if score >= threshold:
                 scored.append((score, item))
         scored.sort(key=lambda x: x[0], reverse=True)

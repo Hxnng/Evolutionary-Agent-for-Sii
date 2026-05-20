@@ -416,7 +416,25 @@ def search_text(
         return _duckduckgo_search(query, top_k, fetch, int(max_chars))
 
     payload = {"q": query, "num": top_k}
-    data = _serper_post(SERPER_SEARCH_URL, payload)
+    try:
+        data = _serper_post(SERPER_SEARCH_URL, payload)
+    except Exception as exc:  # noqa: BLE001
+        reason = f"{type(exc).__name__}: {exc}"
+        logger.warning("search_text Serper request failed; using fallback: %s", reason)
+        fallback = _duckduckgo_search(query, top_k, fetch, int(max_chars))
+        if fallback:
+            fallback[0]["snippet"] = (
+                f"[serper-error] {reason}; fallback result: "
+                + str(fallback[0].get("snippet", ""))
+            )
+        return fallback or [
+            {
+                "rank": 1,
+                "title": "search unavailable",
+                "url": "",
+                "snippet": f"[serper-error] {reason}; no fallback results.",
+            }
+        ]
     organic = data.get("organic", []) or []
 
     results: list[dict] = []
