@@ -20,6 +20,7 @@ Usage (CLI):
 """
 
 import argparse
+import ast
 import json
 import logging
 import os
@@ -38,7 +39,7 @@ except Exception:  # noqa: BLE001
 if load_dotenv is not None:
     here = Path(__file__).resolve().parent
     load_dotenv(here.parent / ".env")
-    load_dotenv(here / ".env", override=True)
+    load_dotenv(here / ".env")
 
 from openai import OpenAI
 
@@ -282,6 +283,20 @@ TOOLS_SCHEMA = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "answer",
+            "description": "提交最终答案。只在已经确定答案时调用，answer 字段只放答案本体。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "answer": {"type": "string", "description": "最终答案本体，不要解释、引用、Markdown 或前缀。"},
+                },
+                "required": ["answer"],
+            },
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -339,6 +354,7 @@ def normalize_answer(text: str) -> str:
     """Small evaluator normalizer for baseline/evolved comparisons."""
     text = (text or "").strip().lower()
     text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"(?<=\d)年(?=$|[\s,，。.!?？])", "", text)
     text = re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
     return text
 
@@ -350,6 +366,23 @@ def extract_answer(text: str) -> str:
     if m:
         return m.group(1).strip()
     return text.strip()
+
+
+def _is_placeholder_answer(text: str) -> bool:
+    normalized = normalize_answer(text)
+    return normalized in {"", "answer", "答案"} or text.strip() in {"...", "…", "<none>"}
+
+
+def _fallback_answer_from_context(*texts: object) -> str:
+    plain_fallback = ""
+    for text in texts:
+        text = str(text or "")
+        m = re.search(r"<answer>(.*?)</answer>", text, flags=re.DOTALL | re.IGNORECASE)
+        if m and not _is_placeholder_answer(m.group(1).strip()):
+            return m.group(1).strip()
+        if text.strip() and not plain_fallback and not _is_placeholder_answer(text):
+            plain_fallback = text.strip()
+    return plain_fallback
 
 
 def _build_curated_context(
@@ -422,30 +455,140 @@ def _merge_stream_tool_call(parts: dict[int, dict], delta_tool_call) -> None:
             cur["function"]["arguments"] += fn.arguments
 
 
+def _parse_tool_args(raw_args: str) -> dict:
+    raw_args = raw_args or "{}"
+    try:
+        value = json.loads(raw_args)
+        return value if isinstance(value, dict) else {}
+    except json.JSONDecodeError:
+        pass
+
+    try:
+        value = ast.literal_eval(raw_args)
+        return value if isinstance(value, dict) else {}
+    except Exception:  # noqa: BLE001
+        pass
+
+    fixed = re.sub(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:", r'\1"\2":', raw_args)
+    try:
+        value = json.loads(fixed)
+        return value if isinstance(value, dict) else {}
+    except json.JSONDecodeError:
+        pass
+
+    m = re.search(
+        r"(?:answer|final_answer|content|text)\s*:\s*['\"]?(.+?)['\"]?\s*}?\s*$",
+        raw_args,
+        flags=re.DOTALL,
+    )
+    if m:
+        return {"answer": m.group(1).strip().strip("'\"")}
+    return {}
+
+
+def _completion_from_response(response) -> dict | None:
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return None
+    choice = choices[0]
+    msg = choice.message
+    raw_tool_calls = []
+    for tc in getattr(msg, "tool_calls", None) or []:
+        raw_tool_calls.append(tc.model_dump() if hasattr(tc, "model_dump") else tc)
+    usage = getattr(response, "usage", None)
+    return {
+        "content": msg.content or "",
+        "reasoning_content": getattr(msg, "reasoning_content", "") or "",
+        "finish_reason": choice.finish_reason,
+        "tool_calls_data": raw_tool_calls,
+        "tool_calls": [_tool_call_obj(x) for x in raw_tool_calls],
+        "total_tokens": getattr(usage, "total_tokens", None) or "",
+    }
+
+
+def _plain_retry_messages(messages: list[dict]) -> list[dict]:
+    plain = []
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content") or ""
+        if not isinstance(content, str):
+            content = json.dumps(content, ensure_ascii=False)
+        if role == "tool":
+            plain.append({"role": "user", "content": f"Tool evidence:\n{content}"})
+            continue
+        if role == "assistant" and not content.strip():
+            continue
+        plain.append({"role": role if role in {"system", "user", "assistant"} else "user", "content": content})
+    return plain
+
+
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    name = type(exc).__name__
+    text = str(exc).lower()
+    return (
+        name in {"APIConnectionError", "APITimeoutError", "ConnectError", "ReadError", "RemoteProtocolError"}
+        or "connection error" in text
+        or "unexpected_eof" in text
+        or "temporarily" in text
+    )
+
+
+def _create_completion_with_retries(client: OpenAI, request_kwargs: dict, *, attempts: int = 3):
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return client.chat.completions.create(**request_kwargs)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt >= attempts or not _is_retryable_llm_error(exc):
+                raise
+            sleep_sec = 1.5 * attempt
+            logger.warning(
+                "LLM connection failed on attempt %d/%d: %s; retrying in %.1fs",
+                attempt,
+                attempts,
+                exc,
+                sleep_sec,
+            )
+            time.sleep(sleep_sec)
+    raise last_exc or RuntimeError("LLM request failed without exception")
+
+
 def _chat_completion(client: OpenAI, request_kwargs: dict) -> dict:
     """Call Qwen through OpenAI-compatible API.
 
     DashScope requires stream=True when extra_body.enable_thinking is enabled,
     so the harness aggregates stream chunks into the same shape the loop needs.
     """
-    if not ENABLE_THINKING:
+    use_thinking_stream = bool((request_kwargs.get("extra_body") or {}).get("enable_thinking"))
+    if not use_thinking_stream:
         request_kwargs = dict(request_kwargs)
         request_kwargs.pop("extra_body", None)
-        response = client.chat.completions.create(**request_kwargs)
-        choice = response.choices[0]
-        msg = choice.message
-        raw_tool_calls = []
-        for tc in getattr(msg, "tool_calls", None) or []:
-            raw_tool_calls.append(tc.model_dump() if hasattr(tc, "model_dump") else tc)
-        usage = getattr(response, "usage", None)
-        return {
-            "content": msg.content or "",
-            "reasoning_content": getattr(msg, "reasoning_content", "") or "",
-            "finish_reason": choice.finish_reason,
-            "tool_calls_data": raw_tool_calls,
-            "tool_calls": [_tool_call_obj(x) for x in raw_tool_calls],
-            "total_tokens": getattr(usage, "total_tokens", None) or "",
-        }
+        response = _create_completion_with_retries(client, request_kwargs)
+        parsed = _completion_from_response(response)
+        if parsed is not None:
+            return parsed
+
+        retry_kwargs = dict(request_kwargs)
+        retry_kwargs.pop("tools", None)
+        retry_kwargs.pop("tool_choice", None)
+        retry_kwargs["messages"] = [
+            {
+                "role": "system",
+                "content": (
+                    "The previous provider response had no choices. "
+                    "Do not call tools. Return the best supported final answer as <answer>...</answer>."
+                ),
+            },
+            *_plain_retry_messages(request_kwargs.get("messages", [])),
+        ]
+        response = _create_completion_with_retries(client, retry_kwargs)
+        parsed = _completion_from_response(response)
+        if parsed is not None:
+            return parsed
+
+        dump = response.model_dump_json() if hasattr(response, "model_dump_json") else str(response)
+        raise RuntimeError(f"Provider returned HTTP 200 without choices: {dump[:1000]}")
 
     stream_kwargs = dict(request_kwargs)
     stream_kwargs["stream"] = True
@@ -784,12 +927,17 @@ def run_task(
         try:
             llm_output = _chat_completion(client, request_kwargs)
         except Exception as exc:
+            fallback = _fallback_answer_from_context(curated.system_prompt)
             logger.error("LLM call failed: %s", exc, exc_info=True)
             traj.write(
                 Role.TOOL,
-                f"[HARNESS ERROR] LLM call failed at step {step}: {exc}",
+                (
+                    f"[HARNESS ERROR] LLM call failed at step {step}: {exc}. "
+                    f"Fallback answer: {fallback or '<none>'}"
+                ),
                 step_id=step,
             )
+            final_answer = fallback
             break
 
         content = llm_output["content"]
@@ -834,13 +982,61 @@ def run_task(
             continue
 
         # -------------------------------------------------------- tool calls
+        completed_by_answer_tool = False
         for tc in tool_calls:
             fn_name = tc.function.name
-            try:
-                fn_args = json.loads(tc.function.arguments)
-            except json.JSONDecodeError as exc:
-                fn_args = {}
-                logger.warning("Bad tool args JSON: %s", exc)
+            fn_args = _parse_tool_args(tc.function.arguments)
+            if not fn_args and tc.function.arguments not in ("", "{}"):
+                logger.warning("Bad tool args JSON: %s", tc.function.arguments)
+
+            if fn_name in {"answer", "final_answer"}:
+                answer_text = (
+                    fn_args.get("answer")
+                    or fn_args.get("final_answer")
+                    or fn_args.get("content")
+                    or fn_args.get("text")
+                    or ""
+                )
+                if not answer_text and fn_args:
+                    answer_text = json.dumps(fn_args, ensure_ascii=False)
+                if not answer_text:
+                    fallback = _fallback_answer_from_context(content, curated.system_prompt)
+                    final_answer = fallback or ""
+                    tool_result = "[HARNESS WARNING] Empty answer tool call; stopped without another provider call."
+                    if fallback:
+                        tool_result += f" Fallback answer: {fallback}"
+                    else:
+                        tool_result += " No fallback answer was available."
+                    logger.info("tool_call: %s(%s)", fn_name, fn_args)
+                    logger.info("tool_result (%s): %s", fn_name, tool_result)
+                    traj.write(
+                        Role.TOOL,
+                        tool_result,
+                        step_id=step,
+                        tool_call_id=tc.id,
+                        extra={
+                            "fn_name": fn_name,
+                            "fn_args": fn_args,
+                            "empty_answer_tool": True,
+                            "fallback_answer": fallback,
+                        },
+                    )
+                    completed_by_answer_tool = True
+                    break
+                final_answer = str(answer_text)
+                tool_result = "[HARNESS] Final answer accepted from answer tool call."
+                logger.info("tool_call: %s(%s)", fn_name, fn_args)
+                logger.info("tool_result (%s): %s", fn_name, tool_result)
+                traj.write(
+                    Role.TOOL,
+                    tool_result,
+                    step_id=step,
+                    tool_call_id=tc.id,
+                    extra={"fn_name": fn_name, "fn_args": fn_args, "final_answer_tool": True},
+                )
+                completed_by_answer_tool = True
+                break
+
             if fn_name == "search_image" and image_path:
                 requested_image = str(fn_args.get("image") or fn_args.get("image_url") or "")
                 if requested_image and not requested_image.startswith(("http://", "https://")):
@@ -907,6 +1103,8 @@ def run_task(
                 tool_call_id=tc.id,
                 extra={"fn_name": fn_name, "fn_args": fn_args},
             )
+        if completed_by_answer_tool:
+            break
     else:
         logger.warning("Reached max_steps=%d without finish_reason=stop", max_steps)
         reached_max_steps = True

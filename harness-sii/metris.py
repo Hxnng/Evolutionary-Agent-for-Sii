@@ -52,6 +52,7 @@ PRED_FIELDS = ("pred", "prediction", "output", "response")
 def normalize_answer(text: Any) -> str:
     text = str(text or "").strip().lower()
     text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"(?<=\d)年(?=$|[\s,，。.!?？])", "", text)
     text = re.sub(r"[\s\W_]+", "", text, flags=re.UNICODE)
     return text
 

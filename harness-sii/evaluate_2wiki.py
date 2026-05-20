@@ -265,6 +265,7 @@ def _run_one(
     skills_dir: str,
     learned_skills_dir: str,
     enable_reflection: bool,
+    enable_fastpath: bool,
 ) -> dict[str, Any]:
     record_id = row.get("id", source_index)
     task_suffix = _clean_task_id(record_id, str(source_index))
@@ -278,7 +279,7 @@ def _run_one(
     answer = str(row.get("answer") or "")
     task_started = time.time()
 
-    if evolved:
+    if evolved and enable_fastpath:
         fast_pred = twowiki_fast_answer(row)
         if fast_pred:
             trajectory_path = write_fastpath_trajectory(
@@ -372,6 +373,7 @@ def run_dataset(
     skills_dir: str = "skills",
     learned_skills_dir: str = "learned_skills",
     enable_reflection: bool = True,
+    enable_fastpath: bool = True,
     mode_label: str | None = None,
 ) -> dict[str, Any]:
     rows = _read_records(dataset_path, split=split, strict=strict)
@@ -415,6 +417,7 @@ def run_dataset(
                     skills_dir=skills_dir,
                     learned_skills_dir=learned_skills_dir,
                     enable_reflection=enable_reflection,
+                    enable_fastpath=enable_fastpath,
                 )
                 out.write(json.dumps(_prediction_record(record), ensure_ascii=False) + "\n")
                 out.flush()
@@ -438,6 +441,7 @@ def run_dataset(
                         skills_dir=skills_dir,
                         learned_skills_dir=learned_skills_dir,
                         enable_reflection=enable_reflection,
+                        enable_fastpath=enable_fastpath,
                     )
                     for local_i, row in enumerate(rows)
                 ]
@@ -459,6 +463,7 @@ def run_dataset(
         "skills_dir": skills_dir,
         "learned_skills_dir": learned_skills_dir,
         "reflection": enable_reflection,
+        "fastpath": enable_fastpath,
         "workers": workers,
         "total": total,
         "answerable": answerable,
@@ -498,6 +503,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--max-context-chars", type=int, default=12000)
     p.add_argument("--max-sentences-per-title", type=int, default=None)
     p.add_argument(
+        "--no-fastpath",
+        action="store_true",
+        help="Disable deterministic evidence resolver and force generator execution.",
+    )
+    p.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -533,6 +543,7 @@ if __name__ == "__main__":
         skills_dir=eval_mode.skills_dir,
         learned_skills_dir=eval_mode.learned_skills_dir,
         enable_reflection=eval_mode.reflection,
+        enable_fastpath=not args.no_fastpath,
         mode_label=eval_mode.label if not args.baseline else "baseline",
     )
     print(json.dumps(metrics, ensure_ascii=False, indent=2))

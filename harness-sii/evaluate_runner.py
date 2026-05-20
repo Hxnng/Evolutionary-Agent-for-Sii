@@ -40,6 +40,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--workers", type=int, default=1)
     p.add_argument("--group-id", default=None)
     p.add_argument("--submission-dir", type=Path, default=None)
+    p.add_argument(
+        "--no-fastpath",
+        action="store_true",
+        help="Disable dataset deterministic shortcuts so 2Wiki runs through the generator.",
+    )
     return p.parse_args()
 
 
@@ -79,6 +84,7 @@ def main() -> None:
             split_name=args.split_name or "2wiki",
             max_context_chars=args.max_context_chars,
             max_sentences_per_title=args.max_sentences_per_title,
+            enable_fastpath=not args.no_fastpath,
             **common,
         )
     else:

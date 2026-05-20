@@ -41,6 +41,7 @@ Use it to choose which skill files are worth reading. When a skill strongly matc
 ### general
 
 - `memory`: High-quality fallback procedure for evidence selection, tool discipline, stopping, and answer control when no narrower skill applies. (domains=general, memory, evidence, format; triggers=fallback, context selection, evidence gap, stop tool use); file=`general/memory.md`
+- `search`: Reusable tactics for search failures. (domains=search, reasoning, image; triggers=image); file=`general/search.md`
 
 ### simplevqa
 
