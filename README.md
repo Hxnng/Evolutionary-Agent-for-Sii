@@ -10,7 +10,9 @@
 
 ## 0. 评分点对应说明
 
-本项目围绕课题要求的“尝试 -> 反思 -> 进化”闭环实现：原始 ReAct Agent 先在 SimpleVQA / 2Wiki 上得到 baseline，失败或低效轨迹进入 Reflection，Reflection 产出的可复用经验写入 Memory / Skill，后续任务由 Curator 选择少量相关 skill 注入 Generator，从而减少无效搜索、重复工具调用和格式错误。
+本项目实现了更高维度的harness engineering，让一个agent来给予问题本身为generator来组织context，同时让reflector基于结果再来优化skills。进而实现完美闭环
+
+原始 ReAct Agent 先在 SimpleVQA / 2Wiki 上得到 baseline，失败或低效轨迹进入 Reflection，Reflection 产出的可复用经验写入 Memory / Skill，后续任务由 Curator 基于问题本身为Generator组织Context，其中包括选择相关 skill ˙知识、解题思路、题目注意事项等等注入 Generator，从而减少无效搜索、重复工具调用和格式错误。
 
 | 评分项 | 课题要求 | 本项目对应实现与代码位置 |
 | --- | --- | --- |
