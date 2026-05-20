@@ -158,11 +158,14 @@ python -B evaluate_2wiki.py \
 python -B evaluate_benchmark.py \
   --dataset data/benchmark.csv \
   --output runs/evolved/benchmark_predictions.jsonl \
+  --trajectory-output runs/evolved/benchmark_trajectories.jsonl \
   --metrics-output runs/evolved/benchmark_metrics.json \
   --traj-dir runs/evolved/benchmark_trajectories \
   --split-name benchmark \
   --workers 8
 ```
+
+预测 JSONL 严格按课题 PDF 输出 `index, instruction, image, answer, pred` 五个字段；`--trajectory-output` 会把所有单题轨迹合并为一个 JSONL。
 
 或使用 `pipeline.sh`：
 

@@ -12,6 +12,9 @@ Example:
         --output runs/2wiki/evolved_predictions.jsonl \
         --traj-dir runs/2wiki/evolved_trajectories \
         --limit 200
+
+Prediction JSONL follows the course PDF submission shape exactly:
+{"index":, "instruction":, "image":, "answer":, "pred":}
 """
 
 from __future__ import annotations
@@ -30,6 +33,33 @@ from dataset_context import twowiki_focus_block
 from task_runner import extract_answer, normalize_answer, run_task
 
 logger = logging.getLogger("harness.evaluate_2wiki")
+
+PREDICTION_FIELDS = ("index", "instruction", "image", "answer", "pred")
+
+
+def _prediction_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {field: record.get(field, "") for field in PREDICTION_FIELDS}
+
+
+def _index_sort_key(record: dict[str, Any]) -> tuple[int, Any]:
+    value = record.get("index", 0)
+    try:
+        return (0, int(value))
+    except (TypeError, ValueError):
+        return (1, str(value))
+
+
+def _write_trajectory_output(records: list[dict[str, Any]], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as out:
+        for record in sorted(records, key=_index_sort_key):
+            traj_path = Path(str(record.get("trajectory_path") or ""))
+            if not traj_path.exists():
+                continue
+            with traj_path.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.strip():
+                        out.write(line if line.endswith("\n") else line + "\n")
 
 
 def _read_json_records(path: Path) -> list[dict[str, Any]]:
@@ -264,6 +294,7 @@ def _run_one(
                 "split": split,
                 "question": row.get("question", ""),
                 "instruction": instruction,
+                "image": "",
                 "answer": answer,
                 "pred": fast_pred,
                 "success": success if answer else None,
@@ -298,6 +329,7 @@ def _run_one(
         "split": split,
         "question": row.get("question", ""),
         "instruction": instruction,
+        "image": "",
         "answer": answer,
         "pred": pred,
         "success": success if answer else None,
@@ -328,6 +360,7 @@ def run_dataset(
     max_context_chars: int = 12000,
     max_sentences_per_title: int | None = None,
     workers: int = 1,
+    trajectory_output: Path | None = None,
 ) -> dict[str, Any]:
     rows = _read_records(dataset_path, split=split, strict=strict)
     if offset:
@@ -343,6 +376,7 @@ def run_dataset(
     total = 0
     started = time.time()
     workers = max(1, int(workers))
+    records: list[dict[str, Any]] = []
 
     def _score(record: dict[str, Any]) -> None:
         nonlocal total, answerable, correct
@@ -367,8 +401,9 @@ def run_dataset(
                     model_name=model_name,
                     llm_base_url=llm_base_url,
                 )
-                out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                out.write(json.dumps(_prediction_record(record), ensure_ascii=False) + "\n")
                 out.flush()
+                records.append(record)
                 _score(record)
         else:
             with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -390,8 +425,9 @@ def run_dataset(
                 ]
                 for future in as_completed(futures):
                     record = future.result()
-                    out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    out.write(json.dumps(_prediction_record(record), ensure_ascii=False) + "\n")
                     out.flush()
+                    records.append(record)
                     _score(record)
 
     elapsed = time.time() - started
@@ -410,6 +446,9 @@ def run_dataset(
         "elapsed_sec": elapsed,
         "skipped_unreadable_files": not strict,
     }
+    if trajectory_output is not None:
+        _write_trajectory_output(records, trajectory_output)
+        metrics["trajectory_output"] = str(trajectory_output)
     if metrics_output is not None:
         metrics_output.parent.mkdir(parents=True, exist_ok=True)
         metrics_output.write_text(
@@ -433,6 +472,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--model", default=None)
     p.add_argument("--llm-url", default=None)
     p.add_argument("--metrics-output", type=Path, default=None)
+    p.add_argument("--trajectory-output", type=Path, default=None, help="Merge all task trajectories into one PDF-format JSONL file.")
     p.add_argument("--max-context-chars", type=int, default=12000)
     p.add_argument("--max-sentences-per-title", type=int, default=None)
     p.add_argument(
@@ -466,5 +506,6 @@ if __name__ == "__main__":
         max_context_chars=args.max_context_chars,
         max_sentences_per_title=args.max_sentences_per_title,
         workers=args.workers,
+        trajectory_output=args.trajectory_output,
     )
     print(json.dumps(metrics, ensure_ascii=False, indent=2))

@@ -60,6 +60,7 @@ run_simplevqa() {
   local out_dir="$OUTPUT_ROOT/simplevqa/$mode"
   local pred="$out_dir/predictions_${LIMIT}.jsonl"
   local traj="$out_dir/trajectories_${LIMIT}"
+  local traj_jsonl="$out_dir/trajectories_${LIMIT}.jsonl"
   local metrics="$out_dir/metrics_${LIMIT}.json"
   local args=(
     -B evaluate.py
@@ -67,6 +68,7 @@ run_simplevqa() {
     --image-root "$SIMPLEVQA_IMAGE_ROOT"
     --output "$pred"
     --traj-dir "$traj"
+    --trajectory-output "$traj_jsonl"
     --metrics-output "$metrics"
     --split-name "simplevqa_${mode}"
     --limit "$LIMIT"
@@ -90,6 +92,7 @@ run_2wiki() {
   local out_dir="$OUTPUT_ROOT/2wiki/$mode"
   local pred="$out_dir/predictions_${LIMIT}.jsonl"
   local traj="$out_dir/trajectories_${LIMIT}"
+  local traj_jsonl="$out_dir/trajectories_${LIMIT}.jsonl"
   local metrics="$out_dir/metrics_${LIMIT}.json"
   local args=(
     -B evaluate_2wiki.py
@@ -97,6 +100,7 @@ run_2wiki() {
     --split "$TWOWIKI_SPLIT"
     --output "$pred"
     --traj-dir "$traj"
+    --trajectory-output "$traj_jsonl"
     --metrics-output "$metrics"
     --split-name "2wiki_${mode}"
     --limit "$LIMIT"
@@ -120,12 +124,14 @@ run_benchmark() {
   local out_dir="$OUTPUT_ROOT/benchmark/$mode"
   local pred="$out_dir/predictions_${LIMIT}.jsonl"
   local traj="$out_dir/trajectories_${LIMIT}"
+  local traj_jsonl="$out_dir/trajectories_${LIMIT}.jsonl"
   local metrics="$out_dir/metrics_${LIMIT}.json"
   local args=(
     -B evaluate_benchmark.py
     --dataset "$BENCHMARK_DATASET"
     --output "$pred"
     --traj-dir "$traj"
+    --trajectory-output "$traj_jsonl"
     --metrics-output "$metrics"
     --split-name "benchmark_${mode}"
     --limit "$LIMIT"

@@ -1,10 +1,11 @@
 """
 Batch evaluator for SimpleVQA-style JSON/JSONL files.
 
-It produces the required prediction JSONL shape:
-{"index":, "task_id":, "instruction":, "image":, "answer":, "pred":, ...}
+The prediction JSONL follows the course PDF submission shape exactly:
+{"index":, "instruction":, "image":, "answer":, "pred":}
 
 Trajectories are written by task_runner into the selected trajectory directory.
+Use --trajectory-output to merge per-task trajectories into one JSONL file.
 """
 
 from __future__ import annotations
@@ -20,6 +21,34 @@ from typing import Any
 from dataset_fastpath import simplevqa_fast_answer, write_fastpath_trajectory
 from dataset_context import simplevqa_hint_block
 from task_runner import extract_answer, normalize_answer, run_task
+
+
+PREDICTION_FIELDS = ("index", "instruction", "image", "answer", "pred")
+
+
+def _prediction_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {field: record.get(field, "") for field in PREDICTION_FIELDS}
+
+
+def _index_sort_key(record: dict[str, Any]) -> tuple[int, Any]:
+    value = record.get("index", 0)
+    try:
+        return (0, int(value))
+    except (TypeError, ValueError):
+        return (1, str(value))
+
+
+def _write_trajectory_output(records: list[dict[str, Any]], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as out:
+        for record in sorted(records, key=_index_sort_key):
+            traj_path = Path(str(record.get("trajectory_path") or ""))
+            if not traj_path.exists():
+                continue
+            with traj_path.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.strip():
+                        out.write(line if line.endswith("\n") else line + "\n")
 
 
 def _read_records(path: Path) -> list[dict[str, Any]]:
@@ -185,6 +214,7 @@ def run_dataset(
     llm_base_url: str | None = None,
     metrics_output: Path | None = None,
     workers: int = 1,
+    trajectory_output: Path | None = None,
 ) -> dict[str, Any]:
     rows = _read_records(dataset_path)
     if offset:
@@ -198,6 +228,7 @@ def run_dataset(
     total = 0
     started = time.time()
     workers = max(1, int(workers))
+    records: list[dict[str, Any]] = []
 
     with output_path.open("w", encoding="utf-8") as out:
         if workers == 1:
@@ -215,8 +246,9 @@ def run_dataset(
                 for local_i, row in enumerate(rows)
             )
             for record in record_iter:
-                out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                out.write(json.dumps(_prediction_record(record), ensure_ascii=False) + "\n")
                 out.flush()
+                records.append(record)
                 total += 1
                 correct += int(bool(record.get("answer")) and bool(record.get("success")))
         else:
@@ -237,8 +269,9 @@ def run_dataset(
                 ]
                 for future in as_completed(futures):
                     record = future.result()
-                    out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    out.write(json.dumps(_prediction_record(record), ensure_ascii=False) + "\n")
                     out.flush()
+                    records.append(record)
                     total += 1
                     correct += int(bool(record.get("answer")) and bool(record.get("success")))
 
@@ -255,6 +288,9 @@ def run_dataset(
         "accuracy": correct / total if total else 0.0,
         "elapsed_sec": elapsed,
     }
+    if trajectory_output is not None:
+        _write_trajectory_output(records, trajectory_output)
+        metrics["trajectory_output"] = str(trajectory_output)
     if metrics_output is not None:
         metrics_output.parent.mkdir(parents=True, exist_ok=True)
         metrics_output.write_text(
@@ -277,6 +313,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--model", default=None)
     p.add_argument("--llm-url", default=None)
     p.add_argument("--metrics-output", type=Path, default=None)
+    p.add_argument("--trajectory-output", type=Path, default=None, help="Merge all task trajectories into one PDF-format JSONL file.")
     p.add_argument("--workers", type=int, default=1, help="Parallel task workers. Start with 4-8 for full SimpleVQA.")
     return p.parse_args()
 
@@ -296,5 +333,6 @@ if __name__ == "__main__":
         llm_base_url=args.llm_url,
         metrics_output=args.metrics_output,
         workers=args.workers,
+        trajectory_output=args.trajectory_output,
     )
     print(json.dumps(metrics, ensure_ascii=False, indent=2))

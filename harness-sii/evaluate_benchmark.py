@@ -4,6 +4,9 @@ Batch evaluator for benchmark.csv.
 Expected CSV columns:
     problem,image,answer
 
+Prediction JSONL follows the course PDF submission shape exactly:
+{"index":, "instruction":, "image":, "answer":, "pred":}
+
 The image column can be empty, an http(s) URL, a data:image/... base64 URL,
 a raw base64 image string, or a local image path. Raw base64 images are wrapped
 as data URLs with a MIME type inferred from their magic bytes.
@@ -24,6 +27,21 @@ from pathlib import Path
 from typing import Any
 
 from task_runner import MAX_STEPS, extract_answer, normalize_answer, run_task
+
+
+PREDICTION_FIELDS = ("index", "instruction", "image", "answer", "pred")
+
+
+def _prediction_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {field: record.get(field, "") for field in PREDICTION_FIELDS}
+
+
+def _index_sort_key(record: dict[str, Any]) -> tuple[int, Any]:
+    value = record.get("index", 0)
+    try:
+        return (0, int(value))
+    except (TypeError, ValueError):
+        return (1, str(value))
 
 
 def _read_csv_records(path: Path) -> list[dict[str, Any]]:
@@ -139,31 +157,17 @@ def _run_one(
     }
 
 
-def _write_submission_answers(
-    *,
-    source_rows: list[dict[str, Any]],
-    records: list[dict[str, Any]],
-    output_path: Path,
-) -> None:
-    by_index = {int(record["index"]): record for record in records}
-    fieldnames = [key for key in source_rows[0].keys() if not key.startswith("__")] if source_rows else ["problem", "image"]
-    if "answer" not in fieldnames:
-        fieldnames.append("answer")
+def _write_prediction_jsonl(records: list[dict[str, Any]], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        for row in source_rows:
-            source_index = int(row.get("__source_index", len(by_index)))
-            out_row = {key: row.get(key, "") for key in fieldnames}
-            out_row["answer"] = by_index.get(source_index, {}).get("pred", "")
-            writer.writerow(out_row)
+    with output_path.open("w", encoding="utf-8") as out:
+        for record in sorted(records, key=_index_sort_key):
+            out.write(json.dumps(_prediction_record(record), ensure_ascii=False) + "\n")
 
 
 def _write_submission_trajectory(records: list[dict[str, Any]], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as out:
-        for record in sorted(records, key=lambda item: int(item["index"])):
+        for record in sorted(records, key=_index_sort_key):
             traj_path = Path(str(record.get("trajectory_path") or ""))
             if not traj_path.exists():
                 continue
@@ -203,11 +207,11 @@ def _submission_trace_entry(entry: dict[str, Any], record: dict[str, Any]) -> di
     return updated
 
 
-def _write_submission_zip(*, answer_csv: Path, trajectory_json: Path, zip_path: Path) -> None:
+def _write_submission_zip(*, prediction_jsonl: Path, trajectory_jsonl: Path, zip_path: Path) -> None:
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.write(trajectory_json, arcname=trajectory_json.name)
-        zf.write(answer_csv, arcname=answer_csv.name)
+        zf.write(prediction_jsonl, arcname=prediction_jsonl.name)
+        zf.write(trajectory_jsonl, arcname=trajectory_jsonl.name)
 
 
 def _build_instruction(problem: str, has_image: bool) -> str:
@@ -245,6 +249,7 @@ def run_dataset(
     group_id: str | None = None,
     submission_dir: Path | None = None,
     max_steps: int | None = None,
+    trajectory_output: Path | None = None,
 ) -> dict[str, Any]:
     all_rows = _read_csv_records(dataset_path)
     for source_index, row in enumerate(all_rows):
@@ -287,7 +292,7 @@ def run_dataset(
                     llm_base_url=llm_base_url,
                     max_steps=max_steps,
                 )
-                out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                out.write(json.dumps(_prediction_record(record), ensure_ascii=False) + "\n")
                 out.flush()
                 records.append(record)
                 _score(record)
@@ -310,12 +315,12 @@ def run_dataset(
                 ]
                 for future in as_completed(futures):
                     record = future.result()
-                    out.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    out.write(json.dumps(_prediction_record(record), ensure_ascii=False) + "\n")
                     out.flush()
                     records.append(record)
                     _score(record)
 
-    records.sort(key=lambda item: int(item["index"]))
+    records.sort(key=_index_sort_key)
 
     elapsed = time.time() - started
     metrics = {
@@ -331,26 +336,25 @@ def run_dataset(
         "accuracy": correct / answerable if answerable else 0.0,
         "elapsed_sec": elapsed,
     }
+    if trajectory_output is not None:
+        _write_submission_trajectory(records, trajectory_output)
+        metrics["trajectory_output"] = str(trajectory_output)
     if group_id:
         target_dir = submission_dir or output_path.parent
-        answer_csv = target_dir / f"group_{group_id}.csv"
-        trajectory_json = target_dir / f"group_{group_id}.json"
+        prediction_jsonl = target_dir / f"group_{group_id}.jsonl"
+        trajectory_jsonl = target_dir / f"group_{group_id}_trajectories.jsonl"
         zip_path = target_dir / f"group_{group_id}.zip"
-        _write_submission_answers(
-            source_rows=rows,
-            records=records,
-            output_path=answer_csv,
-        )
-        _write_submission_trajectory(records, trajectory_json)
+        _write_prediction_jsonl(records, prediction_jsonl)
+        _write_submission_trajectory(records, trajectory_jsonl)
         _write_submission_zip(
-            answer_csv=answer_csv,
-            trajectory_json=trajectory_json,
+            prediction_jsonl=prediction_jsonl,
+            trajectory_jsonl=trajectory_jsonl,
             zip_path=zip_path,
         )
         metrics.update(
             {
-                "submission_answer_csv": str(answer_csv),
-                "submission_trajectory_json": str(trajectory_json),
+                "submission_prediction_jsonl": str(prediction_jsonl),
+                "submission_trajectory_jsonl": str(trajectory_jsonl),
                 "submission_zip": str(zip_path),
             }
         )
@@ -370,16 +374,13 @@ def generate_submission_files(
     output_dir: Path,
 ):
     """
-    生成打榜提交文件
+    生成打榜提交文件（PDF 要求的 JSONL 口径）
 
     生成：
-    - group_{N}.json: 轨迹文件
-    - group_{N}.csv: 答案文件（包含index, problem, image, answer列）
-    - group_{N}.zip: 压缩文件
+    - group_{N}.jsonl: 最终结果文件（index, instruction, image, answer, pred）
+    - group_{N}_trajectories.jsonl: 轨迹文件
+    - group_{N}.zip: 包含上述两个 JSONL
     """
-    import csv
-    import zipfile
-
     # 加载benchmark输出
     records = []
     with open(benchmark_output, "r", encoding="utf-8") as f:
@@ -390,63 +391,38 @@ def generate_submission_files(
     output_dir.mkdir(parents=True, exist_ok=True)
     group_name = f"group_{group_number}"
 
-    # 生成轨迹文件
-    json_path = output_dir / f"{group_name}.json"
-    all_trajectories = {}
+    # 生成最终结果文件
+    prediction_path = output_dir / f"{group_name}.jsonl"
+    _write_prediction_jsonl(records, prediction_path)
+    print(f"Generated {prediction_path} with {len(records)} predictions")
+
+    # 生成轨迹文件（一个 step 一行）
+    trajectory_path = output_dir / f"{group_name}_trajectories.jsonl"
+    full_records = []
     for record in records:
-        task_id = record.get("task_id", "")
-        trajectory_path = record.get("trajectory_path", "")
-
-        if trajectory_path:
-            traj_path = Path(trajectory_path)
+        traj_ref = record.get("trajectory_path", "")
+        if traj_ref:
+            traj_path = Path(traj_ref)
             if not traj_path.is_absolute():
-                traj_path = trajectory_dir / trajectory_path
-            steps = []
-            if traj_path.exists():
-                with open(traj_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if line.strip():
-                            steps.append(json.loads(line))
-        else:
-            steps = []
-
-        all_trajectories[task_id] = {
-            "index": record.get("index"),
-            "instruction": record.get("instruction", ""),
-            "answer": record.get("answer", ""),
-            "pred": record.get("pred", ""),
-            "steps": steps,
-        }
-
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(all_trajectories, f, ensure_ascii=False, indent=2)
-    print(f"Generated {json_path} with {len(all_trajectories)} trajectories")
-
-    # 生成答案文件
-    csv_path = output_dir / f"{group_name}.csv"
-    with open(csv_path, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["index", "problem", "image", "answer"])
-        for record in records:
-            writer.writerow([
-                record.get("index", ""),
-                record.get("problem", ""),
-                record.get("image", ""),
-                record.get("pred", ""),
-            ])
-    print(f"Generated {csv_path} with {len(records)} answers")
+                traj_path = trajectory_dir / traj_ref
+            record["trajectory_path"] = str(traj_path)
+        full_records.append(record)
+    _write_submission_trajectory(full_records, trajectory_path)
+    print(f"Generated {trajectory_path}")
 
     # 生成压缩文件
     zip_path = output_dir / f"{group_name}.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.write(json_path, json_path.name)
-        zf.write(csv_path, csv_path.name)
+    _write_submission_zip(
+        prediction_jsonl=prediction_path,
+        trajectory_jsonl=trajectory_path,
+        zip_path=zip_path,
+    )
     print(f"Generated {zip_path}")
 
     print(f"\nSubmission files generated in {output_dir}/")
-    print(f"  - {group_name}.json (trajectories)")
-    print(f"  - {group_name}.csv (answers)")
-    print(f"  - {group_name}.zip (submission)")
+    print(f"  - {group_name}.jsonl (predictions)")
+    print(f"  - {group_name}_trajectories.jsonl (trajectories)")
+    print(f"  - {group_name}.zip (jsonl bundle)")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -463,7 +439,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--llm-url", default=None)
     p.add_argument("--metrics-output", type=Path, default=None)
     p.add_argument("--max-steps", type=int, default=None, help="Max agent loop steps. Defaults to MAX_STEPS from .env.")
-    p.add_argument("--group-id", default=None, help="Generate group_{id}.csv/json/zip submission files.")
+    p.add_argument("--trajectory-output", type=Path, default=None, help="Merge all task trajectories into one PDF-format JSONL file.")
+    p.add_argument("--group-id", default=None, help="Generate group_{id}.jsonl, group_{id}_trajectories.jsonl, and a zip bundle.")
     p.add_argument("--submission-dir", type=Path, default=None, help="Directory for group submission files.")
     p.add_argument(
         "--workers",
@@ -499,17 +476,6 @@ if __name__ == "__main__":
         group_id=group_id,
         submission_dir=args.submission_dir,
         max_steps=args.max_steps,
+        trajectory_output=args.trajectory_output,
     )
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
-
-    # 如果指定了组号，生成打榜提交文件
-    if args.group_number is not None:
-        print("\n" + "="*50)
-        print("Generating submission files...")
-        print("="*50)
-        generate_submission_files(
-            benchmark_output=args.output,
-            trajectory_dir=args.traj_dir,
-            group_number=args.group_number,
-            output_dir=args.submission_dir,
-        )

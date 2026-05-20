@@ -251,6 +251,7 @@ problem,image,answer
 python -B evaluate_benchmark.py \
   --dataset data/benchmark.csv \
   --output runs/evolved/benchmark_predictions.jsonl \
+  --trajectory-output runs/evolved/benchmark_trajectories.jsonl \
   --metrics-output runs/evolved/benchmark_metrics.json \
   --traj-dir runs/evolved/benchmark_trajectories \
   --split-name benchmark
@@ -262,6 +263,7 @@ python -B evaluate_benchmark.py \
 python -B evaluate_benchmark.py \
   --dataset data/benchmark.csv \
   --output runs/evolved/benchmark_predictions.jsonl \
+  --trajectory-output runs/evolved/benchmark_trajectories.jsonl \
   --metrics-output runs/evolved/benchmark_metrics.json \
   --traj-dir runs/evolved/benchmark_trajectories \
   --split-name benchmark \
@@ -274,6 +276,7 @@ python -B evaluate_benchmark.py \
 python -B evaluate_benchmark.py \
   --dataset data/benchmark.csv \
   --output runs/evolved/benchmark_predictions.jsonl \
+  --trajectory-output runs/evolved/benchmark_trajectories.jsonl \
   --metrics-output runs/evolved/benchmark_metrics.json \
   --traj-dir runs/evolved/benchmark_trajectories \
   --split-name benchmark \
@@ -285,9 +288,9 @@ python -B evaluate_benchmark.py \
 ### 提交文件格式
 
 生成的文件在 `submission/` 目录：
-- `group_11.json` - 轨迹文件（包含每个问题的完整推理轨迹）
-- `group_11.csv` - 答案文件（包含index, problem, image, answer列）
-- `group_11.zip` - 压缩文件（提交此文件）
+- `group_11.jsonl` - 打榜最终结果（每行包含 `index, instruction, image, answer, pred`）
+- `group_11_trajectories.jsonl` - 所有轨迹数据（每行一个 system/user/assistant/tool step）
+- `group_11.zip` - 包含上述两个 JSONL 的压缩包
 
 
 统一流水线（可选，支持 `DATASET_NAME` / `WORKERS` / baseline+evolved）：
@@ -299,23 +302,19 @@ DATASET_NAME=2wiki WORKERS=8 LIMIT=200 bash pipeline.sh
 
 ## 输出格式
 
-预测 JSONL 每行包含核心字段：
+预测 JSONL 每行严格使用课题 PDF 要求的五个字段：
 
 ```json
 {
   "index": 0,
-  "task_id": "simplevqa_0",
   "instruction": "...",
   "image": "CCSimpleQA/0.jpg",
   "answer": "...",
-  "pred": "...",
-  "success": true,
-  "steps": 4,
-  "trajectory_path": "runs/evolved/simplevqa_trajectories/simplevqa_0.jsonl"
+  "pred": "..."
 }
 ```
 
-轨迹 JSONL 保存完整 system/user/assistant/tool/reflection 过程，可用于复盘和评分。
+轨迹 JSONL 保存完整 system/user/assistant/tool/reflection 过程。需要合并为 PDF 示例里的单个轨迹文件时，加 `--trajectory-output <path>.jsonl`。
 
 ## Baseline 与 Evolved 对比
 
