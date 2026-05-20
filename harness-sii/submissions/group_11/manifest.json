@@ -1,0 +1,34 @@
+[
+  {
+    "dataset": "SimpleVQA",
+    "evolved": false,
+    "result_file": "/Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii/submissions/group_11/SimpleVQA_group_11_result.jsonl",
+    "trajectory_file": "/Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii/submissions/group_11/SimpleVQA_group_11_trajectory.jsonl",
+    "result_rows": 99,
+    "trajectory_rows": 596
+  },
+  {
+    "dataset": "2Wiki",
+    "evolved": false,
+    "result_file": "/Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii/submissions/group_11/2Wiki_group_11_result.jsonl",
+    "trajectory_file": "/Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii/submissions/group_11/2Wiki_group_11_trajectory.jsonl",
+    "result_rows": 100,
+    "trajectory_rows": 305
+  },
+  {
+    "dataset": "SimpleVQA",
+    "evolved": true,
+    "result_file": "/Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii/submissions/group_11/evo_SimpleVQA_group_11_result.jsonl",
+    "trajectory_file": "/Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii/submissions/group_11/evo_SimpleVQA_group_11_trajectory.jsonl",
+    "result_rows": 99,
+    "trajectory_rows": 1249
+  },
+  {
+    "dataset": "2Wiki",
+    "evolved": true,
+    "result_file": "/Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii/submissions/group_11/evo_2Wiki_group_11_result.jsonl",
+    "trajectory_file": "/Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii/submissions/group_11/evo_2Wiki_group_11_trajectory.jsonl",
+    "result_rows": 100,
+    "trajectory_rows": 402
+  }
+]

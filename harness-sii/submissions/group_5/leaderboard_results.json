@@ -1,0 +1,20 @@
+[
+  {
+    "method": "baseline",
+    "SimpleVQA": 0.2121,
+    "2wiki": 0.91,
+    "leaderboard": 0.01
+  },
+  {
+    "method": "Skill",
+    "SimpleVQA": 0.4286,
+    "2wiki": 0.96,
+    "leaderboard": 0.26
+  },
+  {
+    "method": "SFT",
+    "SimpleVQA": 0.394,
+    "2wiki": 0.72,
+    "leaderboard": 0.36
+  }
+]
