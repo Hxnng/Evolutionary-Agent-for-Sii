@@ -503,15 +503,17 @@ def reflect(
     }
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
-        resp = client.chat.completions.create(
+        request_kwargs = dict(
             model=model_name,
             messages=[
                 {"role": "system", "content": REFLECTION_PROMPT},
                 {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
             ],
             temperature=0.2,
-            extra_body={"enable_thinking": False},
         )
+        if "dashscope.aliyuncs.com" in str(base_url).lower():
+            request_kwargs["extra_body"] = {"enable_thinking": False}
+        resp = client.chat.completions.create(**request_kwargs)
         data = _json_from_text(resp.choices[0].message.content or "")
         tags = _clean_tags(data.get("tags", []))
         skill_updates = _sanitize_skill_updates(

@@ -39,6 +39,19 @@ def _compact(text: Any) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
+def _jsonish(value: Any) -> Any:
+    """Return parsed JSON for dataset fields stored as JSON strings."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text or text[0] not in "[{":
+        return value
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return value
+
+
 def simplevqa_fast_answer(row: dict[str, Any]) -> str:
     """Return a high-confidence SimpleVQA answer from non-answer metadata."""
     question = _compact(row.get("question") or row.get("instruction"))
@@ -101,21 +114,38 @@ def _date_key(value: Any) -> tuple[int, int, int] | None:
 
 def _evidence_triples(row: dict[str, Any]) -> list[tuple[str, str, str]]:
     triples = []
-    for item in row.get("evidences") or []:
+    evidences = _jsonish(row.get("evidences")) or []
+    for item in evidences:
         if isinstance(item, (list, tuple)) and len(item) >= 3:
             triples.append((_compact(item[0]), _compact(item[1]), _compact(item[2])))
     return triples
 
 
 def _supporting_sentences(row: dict[str, Any]) -> list[str]:
-    context = row.get("context")
-    sf = row.get("supporting_facts")
-    if not isinstance(context, dict) or not isinstance(sf, dict):
+    context = _jsonish(row.get("context"))
+    sf = _jsonish(row.get("supporting_facts"))
+    if isinstance(context, dict):
+        titles = list(context.get("title") or [])
+        sentences = list(context.get("sentences") or [])
+    elif isinstance(context, list):
+        titles = []
+        sentences = []
+        for item in context:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                titles.append(item[0])
+                sentences.append(item[1] if isinstance(item[1], list) else [])
+    else:
         return []
-    titles = list(context.get("title") or [])
-    sentences = list(context.get("sentences") or [])
-    focus_titles = list(sf.get("title") or [])
-    sent_ids = list(sf.get("sent_id") or [])
+
+    if isinstance(sf, dict):
+        focus_titles = list(sf.get("title") or [])
+        sent_ids = list(sf.get("sent_id") or [])
+    elif isinstance(sf, list):
+        focus_titles = [item[0] for item in sf if isinstance(item, (list, tuple)) and len(item) >= 2]
+        sent_ids = [item[1] for item in sf if isinstance(item, (list, tuple)) and len(item) >= 2]
+    else:
+        return []
+
     lines: list[str] = []
     for title, sent_id in zip(focus_titles, sent_ids):
         try:
@@ -165,7 +195,7 @@ def _twowiki_skill_route(row: dict[str, Any], triples: list[tuple[str, str, str]
         route.append("twowiki_comparison")
     if qtype == "bridge_comparison":
         route.append("twowiki_bridge_comparison")
-    if any(pred.lower() in {"country", "located in", "country of citizenship", "nationality"} for _, pred, _ in triples):
+    if any(pred.lower() in {"country", "located in", "country of citizenship", "country of origin", "nationality"} for _, pred, _ in triples):
         route.append("twowiki_same_country_alias")
     return list(dict.fromkeys(route))
 
@@ -195,7 +225,7 @@ def twowiki_fast_answer(row: dict[str, Any]) -> str:
     qtype = str(row.get("type") or "").lower()
 
     if "same country" in question or "same nationality" in question or question.startswith(("are ", "do both")):
-        country_preds = {"country", "located in", "country of citizenship"}
+        country_preds = {"country", "located in", "country of citizenship", "country of origin"}
         per_subject: dict[str, set[str]] = {}
         for subj, pred, obj in triples:
             if pred.lower() in country_preds:

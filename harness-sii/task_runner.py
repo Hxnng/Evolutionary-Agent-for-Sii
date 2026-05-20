@@ -65,13 +65,30 @@ logging.basicConfig(
 logger = logging.getLogger("harness.task_runner")
 
 # ---------------------------------------------------------------------------
-# LLM connection.  The defaults target Alibaba Cloud Bailian / DashScope in
-# OpenAI-compatible mode, matching the exam environment.  They can still be
-# overridden for local vLLM/Sglang with LLM_BASE_URL and MODEL_NAME.
+# LLM connections.  Generator is separated from curator/reflector because the
+# answering model may live on a different provider from the planning models.
 # ---------------------------------------------------------------------------
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "qwen3.5-35b-a3b")
+GENERATOR_BASE_URL = os.getenv("GENERATOR_BASE_URL") or os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+GENERATOR_MODEL_NAME = os.getenv("GENERATOR_MODEL_NAME", "qwen/qwen3.5-9b")
+CURATOR_BASE_URL = os.getenv("CURATOR_BASE_URL") or LLM_BASE_URL
+CURATOR_MODEL_NAME = os.getenv("CURATOR_MODEL_NAME") or MODEL_NAME
 LLM_API_KEY  = os.getenv("LLM_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY") or "EMPTY"
+GENERATOR_API_KEY = (
+    os.getenv("GENERATOR_API_KEY")
+    or os.getenv("OPENROUTER_API_KEY")
+    or os.getenv("LLM_API_KEY")
+    or os.getenv("OPENAI_API_KEY")
+    or "EMPTY"
+)
+CURATOR_API_KEY = (
+    os.getenv("CURATOR_API_KEY")
+    or os.getenv("DASHSCOPE_API_KEY")
+    or os.getenv("LLM_API_KEY")
+    or os.getenv("OPENAI_API_KEY")
+    or "EMPTY"
+)
 MAX_STEPS    = int(os.getenv("MAX_STEPS", "15"))
 MAX_TOKENS   = int(os.getenv("MAX_TOKENS", "10000"))
 MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "9"))
@@ -90,6 +107,29 @@ REACT_STATE_MAX_CHARS = int(os.getenv("REACT_STATE_MAX_CHARS", "900"))
 # 调试开关：True = 不向 LLM 注册 tools，纯文本对话，便于先验证 LLM 通路
 # 工具实现接好后默认关闭；如需调试 LLM 通路，export DISABLE_TOOLS=1
 DISABLE_TOOLS = os.getenv("DISABLE_TOOLS", "0") == "1"
+
+
+def _openai_client(base_url: str, api_key: str) -> OpenAI:
+    headers = {}
+    if "openrouter.ai" in str(base_url).lower():
+        referer = os.getenv("OPENROUTER_HTTP_REFERER")
+        title = os.getenv("OPENROUTER_APP_TITLE") or os.getenv("OPENROUTER_X_TITLE")
+        if referer:
+            headers["HTTP-Referer"] = referer
+        if title:
+            headers["X-Title"] = title
+    kwargs = {"base_url": base_url, "api_key": api_key or "EMPTY"}
+    if headers:
+        kwargs["default_headers"] = headers
+    return OpenAI(**kwargs)
+
+
+def _thinking_extra_body(base_url: str) -> dict | None:
+    if not ENABLE_THINKING:
+        return None
+    if "dashscope.aliyuncs.com" in str(base_url).lower():
+        return {"enable_thinking": True}
+    return None
 
 # ---------------------------------------------------------------------------
 # Tool schema (OpenAI function-calling format)
@@ -318,18 +358,21 @@ def _build_curated_context(
     *,
     client: OpenAI | None = None,
     model_name: str | None = None,
+    skills_dir: str | Path = SKILLS_DIR,
+    learned_skills_dir: str | Path = LEARNED_SKILLS_DIR,
+    enable_skills: bool = ENABLE_SKILLS,
 ) -> CuratedContext:
     tools_schema = [] if DISABLE_TOOLS else TOOLS_SCHEMA
     return CuratorAgent(
-        SkillStore(SKILLS_DIR, LEARNED_SKILLS_DIR),
-        MemoryStore(LEARNED_SKILLS_DIR),
+        SkillStore(skills_dir, learned_skills_dir),
+        MemoryStore(learned_skills_dir),
     ).curate(
         task=task,
         base_system_prompt=SYSTEM_PROMPT,
         tools_schema=tools_schema,
-        evolved=evolved and ENABLE_SKILLS,
+        evolved=evolved and enable_skills,
         client=client,
-        model_name=os.getenv("CURATOR_MODEL_NAME") or model_name,
+        model_name=model_name,
     )
 
 
@@ -618,8 +661,8 @@ def _messages_for_step(
 def run_task(
     task: dict,
     max_steps: int = MAX_STEPS,
-    llm_base_url: str = LLM_BASE_URL,
-    model_name: str = MODEL_NAME,
+    llm_base_url: str = GENERATOR_BASE_URL,
+    model_name: str = GENERATOR_MODEL_NAME,
     trajectory_dir: str = "trajectories",
 ) -> dict:
     """
@@ -646,6 +689,11 @@ def run_task(
     image_path  = task.get("image_path")
     gold_answer = task.get("answer", "")
     evolved     = bool(task.get("evolved", True))
+    skills_dir = str(task.get("skills_dir") or SKILLS_DIR)
+    learned_skills_dir = str(task.get("learned_skills_dir") or LEARNED_SKILLS_DIR)
+    enable_skills = bool(task.get("enable_skills", ENABLE_SKILLS))
+    enable_reflection = bool(task.get("enable_reflection", ENABLE_REFLECTION))
+    write_short_term_memory = bool(task.get("write_short_term_memory", enable_reflection))
 
     logger.info("run_task: task_id=%s", task_id)
 
@@ -656,11 +704,11 @@ def run_task(
         reset=overwrite_trajectory,
         preserve_existing=not overwrite_trajectory,
     )
-    client = OpenAI(
-        base_url=llm_base_url or LLM_BASE_URL,
-        api_key=LLM_API_KEY if (llm_base_url or LLM_BASE_URL).startswith("https://dashscope") else (LLM_API_KEY or "EMPTY"),
-    )
-    model_name = model_name or MODEL_NAME
+    generator_base_url = llm_base_url or GENERATOR_BASE_URL
+    generator_model_name = model_name or GENERATOR_MODEL_NAME
+    client = _openai_client(generator_base_url, GENERATOR_API_KEY)
+    curator_client = _openai_client(CURATOR_BASE_URL, CURATOR_API_KEY)
+    curator_model_name = CURATOR_MODEL_NAME
     started_at = time.time()
     tool_call_count = 0
     repeated_tool_calls = 0
@@ -673,8 +721,11 @@ def run_task(
     curated = _build_curated_context(
         task,
         evolved=evolved,
-        client=client,
-        model_name=model_name,
+        client=curator_client,
+        model_name=curator_model_name,
+        skills_dir=skills_dir,
+        learned_skills_dir=learned_skills_dir,
+        enable_skills=enable_skills,
     )
     system_prompt = curated.system_prompt
     traj.write(Role.SYSTEM, system_prompt, step_id=0)
@@ -718,12 +769,14 @@ def run_task(
 
         # 构造请求参数：调试模式下不注册 tools，避免协议不匹配
         request_kwargs = dict(
-            model=model_name,
+            model=generator_model_name,
             messages=messages,
             max_tokens=MAX_TOKENS,
             temperature=GENERATOR_TEMPERATURE,
-            extra_body={"enable_thinking": True},
         )
+        extra_body = _thinking_extra_body(generator_base_url)
+        if extra_body:
+            request_kwargs["extra_body"] = extra_body
         if not DISABLE_TOOLS:
             request_kwargs["tools"] = TOOLS_SCHEMA
             request_kwargs["tool_choice"] = "none" if force_answer else "auto"
@@ -884,19 +937,20 @@ def run_task(
     # Reflection is triggered on failure and can optionally record successful
     # tactics.  The durable artifact is a Markdown skill patch written to the
     # learned skill directory, keeping seed skills separate from training output.
-    should_reflect = ENABLE_REFLECTION and (not success)
+    should_reflect = enable_reflection and (not success)
     record_ungraded_success = os.getenv("RECORD_UNGRADED_SUCCESS_MEMORY", "0") == "1"
     has_gold_answer = bool(str(gold_answer or "").strip())
     should_record_success = (
-        ENABLE_SKILLS
+        enable_skills
+        and enable_reflection
         and os.getenv("RECORD_SUCCESS_MEMORY", "0") == "1"
         and success
         and (has_gold_answer or record_ungraded_success)
     )
-    if ENABLE_SKILLS and (should_reflect or should_record_success):
+    if enable_skills and (should_reflect or should_record_success):
         trajectory_rows = traj.read_all()
-        skill_store = SkillStore(SKILLS_DIR, LEARNED_SKILLS_DIR)
-        memory_store = MemoryStore(LEARNED_SKILLS_DIR)
+        skill_store = SkillStore(skills_dir, learned_skills_dir)
+        memory_store = MemoryStore(learned_skills_dir)
         skill_manifest = skill_store.manifest_text()
         reflection_query = "\n".join(
             str(x or "")
@@ -931,8 +985,8 @@ def run_task(
                 trajectory_summary=summary,
                 skill_manifest=skill_manifest,
                 skill_context=learned_skill_context,
-                model_name=os.getenv("REFLECTION_MODEL_NAME") or model_name,
-                base_url=os.getenv("REFLECTION_BASE_URL") or llm_base_url,
+                model_name=os.getenv("REFLECTION_MODEL_NAME") or MODEL_NAME,
+                base_url=os.getenv("REFLECTION_BASE_URL") or LLM_BASE_URL,
                 api_key=os.getenv("REFLECTION_API_KEY") or LLM_API_KEY,
             )
             lesson = reflection.reusable_memory or reflection.failure_reason
@@ -1011,8 +1065,8 @@ def run_task(
             lesson=lesson,
             skill_updates_applied=applied_skill_updates,
         )
-    elif ENABLE_SKILLS:
-        MemoryStore(LEARNED_SKILLS_DIR).append_short_term(
+    elif enable_skills and write_short_term_memory:
+        MemoryStore(learned_skills_dir).append_short_term(
             task=task,
             summary=summary,
             lesson="Current run completed without reflection; keep as short-term routing evidence only.",
@@ -1042,13 +1096,16 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--instruction", "-i", required=True, help="Task instruction text")
     p.add_argument("--task-id",     "-t", default=None,  help="Optional task ID (auto-generated if omitted)")
     p.add_argument("--max-steps",   "-s", type=int, default=MAX_STEPS, help="Max agent loop steps")
-    p.add_argument("--llm-url",           default=LLM_BASE_URL, help="Sglang base URL")
-    p.add_argument("--model",             default=MODEL_NAME,   help="Model name")
+    p.add_argument("--llm-url",           default=GENERATOR_BASE_URL, help="Generator OpenAI-compatible base URL")
+    p.add_argument("--model",             default=GENERATOR_MODEL_NAME, help="Generator model name")
     p.add_argument("--traj-dir",          default="trajectories", help="Trajectory output directory")
     p.add_argument("--image",             default=None, help="Local path to input image (optional)")
     p.add_argument("--image-url",         default=None, help="Online path to input image (optional)")
     p.add_argument("--answer",            default="", help="Gold answer for evaluation/reflection (optional)")
     p.add_argument("--baseline",          action="store_true", help="Disable memory injection for baseline runs")
+    p.add_argument("--skills-dir",         default=SKILLS_DIR, help="Seed skill directory")
+    p.add_argument("--learned-skills-dir", default=LEARNED_SKILLS_DIR, help="Learned skill directory")
+    p.add_argument("--no-reflection",      action="store_true", help="Disable reflector skill/memory writes")
     p.add_argument("--overwrite-traj",    action="store_true", help="Overwrite <task-id>.jsonl instead of preserving old runs")
     return p.parse_args()
 
@@ -1073,6 +1130,10 @@ if __name__ == "__main__":
         "image_url":   image_url,
         "answer":      args.answer,
         "evolved":     not args.baseline,
+        "skills_dir": args.skills_dir,
+        "learned_skills_dir": args.learned_skills_dir,
+        "enable_reflection": not args.no_reflection,
+        "write_short_term_memory": not args.no_reflection,
         "overwrite_trajectory": args.overwrite_traj,
     }
     if args.task_id:

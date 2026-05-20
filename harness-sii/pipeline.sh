@@ -18,8 +18,8 @@ RUN_EVOLVED="${RUN_EVOLVED:-1}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-runs/pipeline}"
 RUN_NAME="${RUN_NAME:-submission}"
 
-MODEL_NAME="${MODEL_NAME:-}"
-LLM_URL="${LLM_URL:-}"
+GENERATOR_MODEL_NAME="${GENERATOR_MODEL_NAME:-}"
+GENERATOR_BASE_URL="${GENERATOR_BASE_URL:-}"
 
 SIMPLEVQA_DATASET="${SIMPLEVQA_DATASET:-data/simpleVQA/simpleVQA_final_modified.json}"
 SIMPLEVQA_IMAGE_ROOT="${SIMPLEVQA_IMAGE_ROOT:-data/simpleVQA/simpleVQA_datasets}"
@@ -44,11 +44,11 @@ die() { printf '[pipeline][error] %s\n' "$*" >&2; exit 1; }
 
 append_optional_llm_args() {
   local -n out_args=$1
-  if [[ -n "$MODEL_NAME" ]]; then
-    out_args+=(--model "$MODEL_NAME")
+  if [[ -n "$GENERATOR_MODEL_NAME" ]]; then
+    out_args+=(--model "$GENERATOR_MODEL_NAME")
   fi
-  if [[ -n "$LLM_URL" ]]; then
-    out_args+=(--llm-url "$LLM_URL")
+  if [[ -n "$GENERATOR_BASE_URL" ]]; then
+    out_args+=(--llm-url "$GENERATOR_BASE_URL")
   fi
 }
 

@@ -1,8 +1,8 @@
 # Harness SII Quickstart
 
-主说明见仓库根目录 [README.md](../README.md)。本文件只保留最常用命令。
+主说明见仓库根目录 [README.md](../README.md)。本文件保留最常用的本地运行命令。
 
-## 配置
+## 1. 配置
 
 ```bash
 cd /Users/a1234/sii/Evolutionary-Agent-for-Sii
@@ -12,39 +12,78 @@ cp .env.example harness-sii/.env
 填写 `harness-sii/.env`：
 
 ```dotenv
+# Curator / reflector：百炼 35B。
 DASHSCOPE_API_KEY=你的百炼key
+LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 MODEL_NAME=qwen3.5-35b-a3b
+
+# Generator：OpenRouter qwen3.5-9b。
+OPENROUTER_API_KEY=你的openrouter key
+GENERATOR_BASE_URL=https://openrouter.ai/api/v1
+GENERATOR_MODEL_NAME=qwen/qwen3.5-9b
+
 SERPER_API_KEY=你的serper key
 JINA_API_KEY=你的jina key
 SANDBOX_BASE_URL=http://127.0.0.1:8080
 ENABLE_SKILLS=1
-SKILLS_DIR=skills
-LEARNED_SKILLS_DIR=learned_skills
+ENABLE_REFLECTION=1
+DISABLE_TOOLS=0
 ```
 
-如需搜索代理：
+## 2. 先下载 Hugging Face 数据
 
-```dotenv
-SEARCH_PROXY_URL=http://127.0.0.1:8090
-SEARCH_PROXY_TOKEN=
-SEARCH_PROXY_FALLBACK=1
-```
+train 模式不会自动下载数据。必须先把数据放到本地 `data/`。
 
-## 自检
+### 2Wiki
 
 ```bash
 cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii
+mkdir -p data/2wiki
+huggingface-cli download framolfese/2WikiMultihopQA \
+  --repo-type dataset \
+  --local-dir data/2wiki \
+  --include "*.parquet"
+```
+
+期望有：
+
+```text
+data/2wiki/train-*.parquet
+data/2wiki/validation-*.parquet
+data/2wiki/test-*.parquet
+```
+
+### SimpleVQA
+
+```bash
+cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii
+mkdir -p data/simpleVQA_raw data/simpleVQA/simpleVQA_datasets
+huggingface-cli download ohjoonhee/SimpleVQA \
+  --repo-type dataset \
+  --local-dir data/simpleVQA_raw
+```
+
+然后整理成评测脚本需要的格式：
+
+```text
+data/simpleVQA/simpleVQA_train.json
+data/simpleVQA/simpleVQA_test.json
+data/simpleVQA/simpleVQA_datasets/...
+```
+
+SimpleVQA JSON 每条至少包含 `question`、`answer`、`image`。图片路径相对于 `--image-root`。
+
+## 3. 自检
+
+```bash
 python -B tools/search_tool.py text "上海创智学院 谢源老师 代表作" --top-k 1 --no-fetch
 ```
 
 输出 `[mode] direct` 表示直连；输出 `[mode] proxy` 表示正在走 `search-proxy`。
 
-## 浏览器服务
-
-另开终端：
+浏览器服务另开终端：
 
 ```bash
-conda activate sii-harness
 cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/browser-service
 bash run.sh
 ```
@@ -55,141 +94,158 @@ bash run.sh
 curl http://127.0.0.1:8080/health
 ```
 
-## 单任务
+## 4. 运行模式
+
+推荐统一用：
 
 ```bash
-cd /Users/a1234/sii/Evolutionary-Agent-for-Sii/harness-sii
-python -B task_runner.py \
-  --instruction "请查询上海创智学院谢源老师的代表作。" \
-  --task-id smoke_001 \
-  --traj-dir trajectories \
-  --max-steps 8
+python -B evaluate_runner.py ...
 ```
 
-轨迹默认保留历史运行；重复 `task-id` 会生成带时间戳的新 JSONL。需要覆盖时加 `--overwrite-traj`。
+三种主要模式：
 
-## SimpleVQA
+```text
+train:
+  --run-mode train --reflection on
+  从训练集开始跑，失败时写 skill。
 
-进化版默认会注入数据集中的非答案线索（如 `atomic_fact`、`source`、类别信息）并启用 skill evolution；基线用 `--baseline` 关闭这些增强，便于做评分要求里的对比实验。
-这些线索会先交给 `curator.py`。curator 是一个独立 LLM 角色：它读取题目、工具列表、`learned_skills/SKILL.md` 动态索引（首次训练前可不存在）、唯一初始 `skills/init_skill.md` 摘要，判断 generator 可能用到哪些 skill，然后生成结构化 context。context 包括题目要求、答题要点、工具调用计划，最后拼接 curator 选中的 skill 正文。reflector 训练时只写 `learned_skills/`，并采用聚合 skill 结构：`memory.md`、`search.md`、`format.md`、`tool.md` 等；其中长期 memory skill 是 `learned_skills/general/memory.md`，短期轨迹诊断单独写入 `learned_skills/_memory/short_term.md`，不会作为 skill 被自动检索。第一次有效更新会自动创建或刷新 `learned_skills/SKILL.md`，不改 seed skill 目录。
+test learned:
+  --run-mode test --test-mode learned --reflection on
+  加载训练好的 skill，在 test 集上跑完整方法。
+
+test no-reflection:
+  --run-mode test --reflection off
+  不读取训练好的 skill，也不写反思，只跑 curator + generator。
+```
+
+如果 train 得到的 skill 要给 test learned 使用，请两次都传同一个 `--learned-skills-dir`。
+
+## 5. SimpleVQA 三种实验
+
+### train
 
 ```bash
-python -B evaluate.py \
-  --dataset data/simpleVQA/simpleVQA_final_modified.json \
+python -B evaluate_runner.py \
+  --dataset-name simplevqa \
+  --dataset data/simpleVQA/simpleVQA_train.json \
   --image-root data/simpleVQA/simpleVQA_datasets \
-  --output runs/evolved/simplevqa_predictions.jsonl \
-  --metrics-output runs/evolved/simplevqa_metrics.json \
-  --traj-dir runs/evolved/simplevqa_trajectories \
-  --split-name simplevqa \
-  --limit 20
+  --run-mode train \
+  --reflection on \
+  --learned-skills-dir runs/simplevqa/train_skills \
+  --output runs/simplevqa/train/predictions.jsonl \
+  --metrics-output runs/simplevqa/train/metrics.json \
+  --traj-dir runs/simplevqa/train/trajectories \
+  --limit 100 \
+  --workers 4
 ```
 
-全量并行：
+### test learned
 
 ```bash
-python -B evaluate.py \
-  --dataset data/simpleVQA/simpleVQA_final_modified.json \
+python -B evaluate_runner.py \
+  --dataset-name simplevqa \
+  --dataset data/simpleVQA/simpleVQA_test.json \
   --image-root data/simpleVQA/simpleVQA_datasets \
-  --output runs/evolved/simplevqa_full_predictions.jsonl \
-  --metrics-output runs/evolved/simplevqa_full_metrics.json \
-  --traj-dir runs/evolved/simplevqa_full_trajectories \
-  --split-name simplevqa \
-  --workers 8
+  --run-mode test \
+  --test-mode learned \
+  --reflection on \
+  --learned-skills-dir runs/simplevqa/train_skills \
+  --output runs/simplevqa/test_learned/predictions.jsonl \
+  --metrics-output runs/simplevqa/test_learned/metrics.json \
+  --traj-dir runs/simplevqa/test_learned/trajectories \
+  --limit 100 \
+  --workers 4
 ```
 
-`--workers` 建议从 4 或 8 开始，稳定后再试 12/16。
-
-基线对比：
+### test no-reflection
 
 ```bash
-python -B evaluate.py \
-  --dataset data/simpleVQA/simpleVQA_final_modified.json \
+python -B evaluate_runner.py \
+  --dataset-name simplevqa \
+  --dataset data/simpleVQA/simpleVQA_test.json \
   --image-root data/simpleVQA/simpleVQA_datasets \
-  --output runs/baseline/simplevqa_predictions.jsonl \
-  --metrics-output runs/baseline/simplevqa_metrics.json \
-  --traj-dir runs/baseline/simplevqa_trajectories \
-  --split-name simplevqa \
-  --baseline \
-  --limit 100
+  --run-mode test \
+  --reflection off \
+  --output runs/simplevqa/test_no_reflection/predictions.jsonl \
+  --metrics-output runs/simplevqa/test_no_reflection/metrics.json \
+  --traj-dir runs/simplevqa/test_no_reflection/trajectories \
+  --limit 100 \
+  --workers 4
 ```
 
-## 2Wiki
+如果你只有 `simpleVQA_final_modified.json`，可以临时用 `--offset` 和 `--limit` 切片调试；正式结果建议使用固定的 train/test 文件。
 
-读取 parquet 需要 **pyarrow**（已在 `requirements.txt`）。若报 `Reading parquet requires pyarrow`：
+## 6. 2Wiki 三种实验
 
-```bash
-conda activate sii-harness
-cd harness-sii
-pip install -r requirements.txt
-```
-
-进化版会把 2Wiki 的 supporting titles 置顶为 Focus documents，并保留完整候选上下文用于核验；不会把 `answer` 字段写入 prompt。
-同时，evolved 模式会优先使用 `evidences` 三元组做确定性 fast-path：能由证据链推出答案时直接写最小轨迹，不能推出时再回落到 ReAct。这样能显著降低 2Wiki 的 token、轮数、工具调用和总耗时。
-当前实现会先把 2Wiki row 压缩成 compact context packet：question + evidence triples + supporting sentences，再按需检索 chain/date-compare/country-alias/lifespan 等 skill。
+### train
 
 ```bash
-python -B evaluate_2wiki.py \
+python -B evaluate_runner.py \
+  --dataset-name 2wiki \
   --dataset data/2wiki \
-  --split validation \
-  --output runs/evolved/2wiki_predictions.jsonl \
-  --metrics-output runs/evolved/2wiki_metrics.json \
-  --traj-dir runs/evolved/2wiki_trajectories \
-  --split-name 2wiki \
-  --limit 20
+  --split train \
+  --run-mode train \
+  --reflection on \
+  --learned-skills-dir runs/2wiki/train_skills \
+  --output runs/2wiki/train/predictions.jsonl \
+  --metrics-output runs/2wiki/train/metrics.json \
+  --traj-dir runs/2wiki/train/trajectories \
+  --limit 100 \
+  --workers 4
 ```
 
-本地 200 条验证集快速刷分：
+### test learned
 
 ```bash
-python -B evaluate_2wiki.py \
+python -B evaluate_runner.py \
+  --dataset-name 2wiki \
   --dataset data/2wiki \
-  --split validation \
-  --output runs/evolved/2wiki_predictions_200.jsonl \
-  --metrics-output runs/evolved/2wiki_metrics_200.json \
-  --traj-dir runs/evolved/2wiki_trajectories_200 \
-  --split-name 2wiki \
-  --limit 200 \
-  --workers 8
+  --split test \
+  --run-mode test \
+  --test-mode learned \
+  --reflection on \
+  --learned-skills-dir runs/2wiki/train_skills \
+  --output runs/2wiki/test_learned/predictions.jsonl \
+  --metrics-output runs/2wiki/test_learned/metrics.json \
+  --traj-dir runs/2wiki/test_learned/trajectories \
+  --limit 100 \
+  --workers 4
 ```
 
-## benchmark.csv
+### test no-reflection
 
 ```bash
-python -B evaluate_benchmark.py \
-  --dataset data/benchmark.csv \
-  --output runs/evolved/benchmark_predictions.jsonl \
-  --trajectory-output runs/evolved/benchmark_trajectories.jsonl \
-  --metrics-output runs/evolved/benchmark_metrics.json \
-  --traj-dir runs/evolved/benchmark_trajectories \
-  --split-name benchmark \
-  --workers 8
+python -B evaluate_runner.py \
+  --dataset-name 2wiki \
+  --dataset data/2wiki \
+  --split test \
+  --run-mode test \
+  --reflection off \
+  --output runs/2wiki/test_no_reflection/predictions.jsonl \
+  --metrics-output runs/2wiki/test_no_reflection/metrics.json \
+  --traj-dir runs/2wiki/test_no_reflection/trajectories \
+  --limit 100 \
+  --workers 4
 ```
 
-预测 JSONL 严格按课题 PDF 输出 `index, instruction, image, answer, pred` 五个字段；`--trajectory-output` 会把所有单题轨迹合并为一个 JSONL。
+本地调试时可以把 `--split test` 改成 `--split validation`。
 
-或使用 `pipeline.sh`：
-
-```bash
-DATASET_NAME=benchmark WORKERS=8 LIMIT=200 bash pipeline.sh
-```
-
-## Metrics
+## 7. 指标汇总
 
 ```bash
 python -B metris.py \
-  --pred runs/evolved/simplevqa_predictions.jsonl \
-  --traj-dir runs/evolved/simplevqa_trajectories \
-  --output runs/evolved/simplevqa_report.json
+  --pred runs/simplevqa/test_learned/predictions.jsonl \
+  --traj-dir runs/simplevqa/test_learned/trajectories \
+  --output runs/simplevqa/test_learned/report.json
 ```
 
-对比基线和进化版：
+对比 learned 和 no-reflection：
 
 ```bash
 python -B metris.py \
-  --baseline-pred runs/baseline/simplevqa_predictions.jsonl \
-  --baseline-traj runs/baseline/simplevqa_trajectories \
-  --evolved-pred runs/evolved/simplevqa_predictions.jsonl \
-  --evolved-traj runs/evolved/simplevqa_trajectories \
-  --case-limit 100 \
-  --output runs/simplevqa_compare_report.json
+  --baseline-pred runs/simplevqa/test_no_reflection/predictions.jsonl \
+  --baseline-traj runs/simplevqa/test_no_reflection/trajectories \
+  --evolved-pred runs/simplevqa/test_learned/predictions.jsonl \
+  --evolved-traj runs/simplevqa/test_learned/trajectories \
+  --output runs/simplevqa/compare_report.json
 ```

@@ -241,7 +241,7 @@ class CuratorAgent:
             ],
         }
         try:
-            resp = client.chat.completions.create(
+            request_kwargs = dict(
                 model=model_name,
                 messages=[
                     {
@@ -255,8 +255,11 @@ class CuratorAgent:
                 ],
                 temperature=0.2,
                 max_tokens=int(os.getenv("CURATOR_MAX_TOKENS", "900")),
-                extra_body={"enable_thinking": False},
             )
+            base_url = str(getattr(client, "base_url", "") or "")
+            if "dashscope.aliyuncs.com" in base_url.lower():
+                request_kwargs["extra_body"] = {"enable_thinking": False}
+            resp = client.chat.completions.create(**request_kwargs)
             return _json_from_text(resp.choices[0].message.content or "")
         except Exception:
             return None

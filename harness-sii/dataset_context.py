@@ -7,6 +7,7 @@ packets that the curator can route through the skill store.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -16,6 +17,18 @@ from skill_store import SkillStore
 
 def compact_text(text: Any) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _jsonish(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text or text[0] not in "[{":
+        return value
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return value
 
 
 def _source_digest(source: str, max_chars: int = 360) -> str:
@@ -84,12 +97,17 @@ def simplevqa_hint_block(row: dict[str, Any]) -> str:
 
 
 def twowiki_focus_block(row: dict[str, Any]) -> str:
-    sf = row.get("supporting_facts")
+    sf = _jsonish(row.get("supporting_facts"))
     titles: list[str] = []
     sent_ids: list[Any] = []
     if isinstance(sf, dict):
         titles = [compact_text(x) for x in (sf.get("title") or []) if compact_text(x)]
         sent_ids = list(sf.get("sent_id") or [])
+    elif isinstance(sf, list):
+        for item in sf:
+            if isinstance(item, (list, tuple)) and len(item) >= 2 and compact_text(item[0]):
+                titles.append(compact_text(item[0]))
+                sent_ids.append(item[1])
     if not titles:
         return ""
 
